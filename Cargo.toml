@@ -1,0 +1,56 @@
+[workspace]
+members = ["common", "capture", "processing", "web"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# ── Error handling / utilities ───────────────────────────────
+anyhow    = "1"
+thiserror = "2"
+
+# ── Serialization ────────────────────────────────────────────
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml       = "0.8"
+
+# ── Date/time ────────────────────────────────────────────────
+chrono = { version = "0.4", features = ["serde"] }
+
+# ── Logging ──────────────────────────────────────────────────
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# ── Async runtime ────────────────────────────────────────────
+tokio = { version = "1", features = ["full"] }
+
+# ── HTTP / web ───────────────────────────────────────────────
+axum       = "0.7"
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+reqwest    = { version = "0.12", features = ["json"] }
+
+# ── File-system ──────────────────────────────────────────────
+notify = "7"
+
+# ── Image processing ─────────────────────────────────────────
+image = "0.25"
+
+# ── ML inference ─────────────────────────────────────────────
+tract-onnx = "0.21"
+
+# ── Database ─────────────────────────────────────────────────
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# ── mDNS discovery ───────────────────────────────────────────
+mdns-sd = "0.18"
+
+# ── Signal handling ──────────────────────────────────────────
+ctrlc = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
