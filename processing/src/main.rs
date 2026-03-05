@@ -168,6 +168,7 @@ async fn main() -> Result<()> {
             &db,
             detector.as_ref(),
             classifier.as_ref(),
+            discovery_handle.as_ref(),
         )
         .await
         {
@@ -200,6 +201,7 @@ async fn process_cycle(
     db: &db::Database,
     detector: Option<&model::Detector>,
     classifier: Option<&model::Classifier>,
+    discovery: Option<&discovery::DiscoveryHandle>,
 ) -> Result<usize> {
     let detector = match detector {
         Some(d) => d,
@@ -210,7 +212,7 @@ async fn process_cycle(
     };
 
     // 1. List available clips from capture server
-    let clips = capture_client.list_clips().await?;
+    let clips = capture_client.list_clips(discovery).await?;
     if clips.is_empty() {
         return Ok(0);
     }
@@ -227,7 +229,7 @@ async fn process_cycle(
         if db.is_clip_processed(&clip.filename) {
             debug!("Skipping already-processed clip: {}", clip.filename);
             // Still delete from capture server to free space
-            let _ = capture_client.delete_clip(&clip.filename).await;
+            let _ = capture_client.delete_clip(&clip.filename, discovery).await;
             continue;
         }
 
@@ -235,7 +237,7 @@ async fn process_cycle(
 
         // 2. Download clip
         if let Err(e) = capture_client
-            .download_clip(&clip.filename, &clip_path)
+            .download_clip(&clip.filename, &clip_path, discovery)
             .await
         {
             warn!("Failed to download {}: {e:#}", clip.filename);
@@ -387,7 +389,7 @@ async fn process_cycle(
         let _ = std::fs::remove_file(&clip_path);
 
         // 8. Tell capture server we're done with this clip
-        if let Err(e) = capture_client.delete_clip(&clip.filename).await {
+        if let Err(e) = capture_client.delete_clip(&clip.filename, discovery).await {
             warn!("Failed to delete {} from capture server: {e:#}", clip.filename);
         }
 
