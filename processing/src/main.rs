@@ -74,11 +74,12 @@ async fn main() -> Result<()> {
     // Seed from baked-in container image, or download from URLs.
     let required_files: Vec<&str> = {
         let mut files = vec![model::Detector::FILENAME];
-        // Only require classifier files if speciesnet is in model_slugs
-        if config.model_slugs.iter().any(|s| s.contains("speciesnet")) {
-            files.push(model::Classifier::FILENAME);
-            files.push(model::Classifier::LABELS_FILE);
-        }
+        // Always try to seed the classifier files — they are baked into
+        // the container image and cost nothing to copy.  Even when
+        // MODEL_SLUGS is unset, the classifier improves results if
+        // the ONNX file exists.
+        files.push(model::Classifier::FILENAME);
+        files.push(model::Classifier::LABELS_FILE);
         files
     };
     let dl_errors = download::ensure_models(&config.model_dir, &required_files);
@@ -288,11 +289,38 @@ async fn process_cycle(
             }
         }
 
-        // 3b. Motion pre-filter — skip clips with no inter-frame change
+        // 3b. Always run detection on the first frame — even when the
+        //     rest of the clip appears static.  If the first frame
+        //     contains a detection we force full analysis on *all*
+        //     frames (the animal may be present but nearly still).
+        let first_frame_has_detections = {
+            let mut found = false;
+            if let Some(first_frame) = frame_paths.first() {
+                if let Ok(img) = frames::load_image(first_frame) {
+                    let dets = detector.detect(&img, config.confidence);
+                    if !dets.is_empty() {
+                        info!(
+                            "[{}/frame 0] First-frame probe: {} detection(s) — will process all frames",
+                            clip.filename, dets.len()
+                        );
+                        found = true;
+                    } else {
+                        info!(
+                            "[{}/frame 0] First-frame probe: no detections",
+                            clip.filename
+                        );
+                    }
+                }
+            }
+            found
+        };
+
+        // 3c. Motion pre-filter — skip clips with no inter-frame change
+        //     UNLESS the first-frame probe already found a detection.
         let motion = motion::detect_motion(&frame_paths);
-        if !motion.has_motion {
+        if !motion.has_motion && !first_frame_has_detections {
             info!(
-                "Skipping {} — no motion detected (peak MAD={:.2})",
+                "Skipping {} — no motion and no first-frame detections (peak MAD={:.2})",
                 clip.filename, motion.peak_mad
             );
             // Mark as processed (zero detections) so we don't re-download
@@ -306,6 +334,13 @@ async fn process_cycle(
             }
             processed += 1;
             continue;
+        }
+
+        if !motion.has_motion && first_frame_has_detections {
+            info!(
+                "No motion detected (peak MAD={:.2}) but first frame has detections — processing all frames",
+                motion.peak_mad
+            );
         }
 
         // 4. Run detection + classification on each frame
