@@ -1,10 +1,13 @@
 //! Gaia Light Web -- Leptos-based dashboard for camera-trap monitoring.
 
 pub mod app;
+pub mod components;
+pub mod model;
+pub mod pages;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "ssr")] {
-        // Server-only modules go here.
+        pub mod server;
     }
 }
 

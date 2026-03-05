@@ -1,12 +1,419 @@
-/* Gaia Light - Camera Trap Dashboard */
+/* ═══════════════════════════════════════════════════════════════════════════
+   Gaia Light – Camera Trap Wildlife Dashboard
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Reset & Base ───────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { font-size: 15px; }
+
 body {
-    font-family: system-ui, -apple-system, sans-serif;
-    margin: 0;
-    padding: 1rem;
-    background: #0f1117;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #0d1117;
     color: #e0e0e0;
+    line-height: 1.55;
+    min-height: 100vh;
 }
 
-h1 {
+a { color: #8bc34a; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+h1, h2, h3 { color: #8bc34a; font-weight: 600; }
+h1 { font-size: 1.6rem; margin-bottom: 0.6rem; }
+h2 { font-size: 1.2rem; margin-bottom: 0.5rem; }
+
+.loading { color: #888; font-style: italic; padding: 2rem 0; text-align: center; }
+.empty-state { color: #666; padding: 2rem 0; text-align: center; }
+.error { color: #ef5350; padding: 1rem 0; }
+
+/* ── Nav Bar ────────────────────────────────────────────────────────────── */
+.nav-bar {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    padding: 0.6rem 1.5rem;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.nav-bar .brand {
+    font-weight: 700;
+    font-size: 1.1rem;
     color: #8bc34a;
+    margin-right: auto;
+}
+
+.nav-bar a {
+    color: #b0b0b0;
+    font-size: 0.9rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 4px;
+    transition: background 0.15s, color 0.15s;
+}
+
+.nav-bar a:hover,
+.nav-bar a.active {
+    color: #fff;
+    background: #252b33;
+    text-decoration: none;
+}
+
+/* ── Main Content ───────────────────────────────────────────────────────── */
+.main-content {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 1.25rem 1.5rem 3rem;
+}
+
+/* ── Stats Bar ──────────────────────────────────────────────────────────── */
+.stats-bar {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.25rem;
+}
+
+.stat-card {
+    flex: 1 1 140px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    text-align: center;
+    min-width: 120px;
+}
+
+.stat-card .stat-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #8bc34a;
+    display: block;
+}
+
+.stat-card .stat-label {
+    font-size: 0.75rem;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* ── Live Indicator ─────────────────────────────────────────────────────── */
+.live-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    margin-bottom: 1.25rem;
+    font-size: 0.85rem;
+}
+
+.live-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4caf50;
+    animation: pulse 1.5s infinite;
+}
+
+.live-dot.offline { background: #666; animation: none; }
+.live-indicator.offline { opacity: 0.6; }
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+/* ── Detection Cards / Grid ─────────────────────────────────────────────── */
+.detection-grid,
+.feed-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
+}
+
+.detection-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    overflow: hidden;
+    transition: border-color 0.15s;
+}
+
+.detection-card:hover { border-color: #8bc34a; }
+
+.detection-card .crop-image {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    object-fit: cover;
+    background: #1c2128;
+    display: block;
+}
+
+.detection-card .placeholder-image {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #1c2128;
+    color: #444;
+    font-size: 2rem;
+}
+
+.detection-card .card-body {
+    padding: 0.65rem 0.75rem;
+}
+
+.detection-card .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.35rem;
+}
+
+/* Class badges */
+.class-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.class-badge.animal  { background: #1b5e20; color: #a5d6a7; }
+.class-badge.person  { background: #0d47a1; color: #90caf9; }
+.class-badge.vehicle { background: #e65100; color: #ffcc80; }
+.class-badge.unknown { background: #37474f; color: #b0bec5; }
+
+.confidence {
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.confidence.high    { color: #66bb6a; }
+.confidence.medium  { color: #ffa726; }
+.confidence.low     { color: #ef5350; }
+
+.species-row {
+    font-size: 0.82rem;
+    color: #ccc;
+    margin-bottom: 0.25rem;
+}
+
+.species-row .species-name { font-weight: 600; }
+
+.model-badge {
+    display: inline-block;
+    font-size: 0.65rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    background: #1c2128;
+    color: #888;
+    border: 1px solid #30363d;
+}
+
+.card-meta {
+    font-size: 0.72rem;
+    color: #666;
+    margin-top: 0.3rem;
+}
+
+/* ── Page Headers ───────────────────────────────────────────────────────── */
+.page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.filters select {
+    background: #161b22;
+    border: 1px solid #30363d;
+    color: #e0e0e0;
+    padding: 0.35rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+/* ── Pagination ─────────────────────────────────────────────────────────── */
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid #30363d;
+}
+
+.btn {
+    background: #161b22;
+    color: #e0e0e0;
+    border: 1px solid #30363d;
+    padding: 0.4rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: background 0.15s;
+}
+
+.btn:hover:not(:disabled) { background: #252b33; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.page-number { font-size: 0.85rem; color: #888; }
+
+/* ── Species Ranking Table ──────────────────────────────────────────────── */
+.species-ranking,
+.daily-activity,
+.config-section {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+
+.ranking-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.ranking-table th {
+    text-align: left;
+    color: #888;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid #30363d;
+}
+
+.ranking-table td {
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid #1c2128;
+}
+
+.ranking-table .rank { color: #888; font-weight: 700; }
+.ranking-table .species-name { font-weight: 600; color: #e0e0e0; }
+.ranking-table .count { color: #8bc34a; font-weight: 700; }
+.ranking-table .conf { color: #ffa726; }
+.ranking-table .last-seen { color: #888; font-size: 0.78rem; }
+
+.bar-cell { width: 30%; }
+.bar {
+    height: 6px;
+    background: #8bc34a;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+/* ── Daily Chart ────────────────────────────────────────────────────────── */
+.daily-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 120px;
+    padding-top: 0.5rem;
+}
+
+.day-bar {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    height: 100%;
+}
+
+.day-fill {
+    width: 100%;
+    background: #8bc34a;
+    border-radius: 2px 2px 0 0;
+    min-height: 2px;
+    transition: height 0.3s ease;
+}
+
+.day-label {
+    font-size: 0.55rem;
+    color: #666;
+    margin-top: 0.2rem;
+    transform: rotate(-45deg);
+    white-space: nowrap;
+}
+
+/* ── Settings / Config Tables ───────────────────────────────────────────── */
+.config-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.config-table td {
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid #1c2128;
+}
+
+.config-table .key {
+    color: #8bc34a;
+    font-weight: 600;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.8rem;
+    width: 35%;
+}
+
+.config-table .value { color: #ccc; }
+
+.info {
+    color: #888;
+    font-size: 0.85rem;
+    margin-bottom: 0.75rem;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .nav-bar {
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0.5rem 0.75rem;
+    }
+    .nav-bar .brand { width: 100%; margin-bottom: 0.25rem; }
+
+    .main-content { padding: 1rem; }
+
+    .detection-grid,
+    .feed-list {
+        grid-template-columns: 1fr;
+    }
+
+    .stats-bar {
+        gap: 0.5rem;
+    }
+
+    .stat-card {
+        flex: 1 1 100px;
+        min-width: 80px;
+        padding: 0.5rem;
+    }
+
+    .stat-card .stat-value { font-size: 1.2rem; }
+
+    .daily-chart { height: 80px; }
+    .day-label { display: none; }
+
+    .bar-cell { display: none; }
 }
