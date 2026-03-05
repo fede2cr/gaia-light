@@ -50,6 +50,36 @@ mdns-sd = "0.18"
 # ── Signal handling ──────────────────────────────────────────
 ctrlc = "3"
 
+# ── Leptos (web UI) ─────────────────────────────────────────
+leptos        = "0.6"
+leptos_router = "0.6"
+leptos_meta   = "0.6"
+leptos_axum   = "0.6"
+cfg-if        = "1"
+tower         = "0.4"
+http          = "1"
+wasm-bindgen  = "0.2"
+console_error_panic_hook = "0.1"
+
+[[workspace.metadata.leptos]]
+name            = "gaia-light-web"
+bin-package     = "gaia-light-web"
+lib-package     = "gaia-light-web"
+output-name     = "gaia-light-web"
+site-root       = "target/site"
+site-pkg-dir    = "pkg"
+style-file      = "web/style/main.css"
+assets-dir      = "web/public"
+site-addr       = "0.0.0.0:8190"
+reload-port     = 8191
+browserquery    = "defaults"
+watch-additional-files = ["web/style"]
+env             = "DEV"
+bin-features    = ["ssr"]
+bin-default-features  = false
+lib-features    = ["hydrate"]
+lib-default-features  = false
+
 [profile.release]
 opt-level = 3
 lto = true
