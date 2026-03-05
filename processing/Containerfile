@@ -54,13 +54,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip install --no-cache-dir \
        numpy opencv-python-headless pandas requests pyyaml scipy seaborn \
        ipython tqdm matplotlib psutil \
-       onnx onnxruntime onnxsim onnxscript
+       onnx onnxruntime onnxsim onnxscript timm onnx2torch
 
 WORKDIR /export
 
 COPY processing/scripts/export_models.py .
-RUN --mount=type=secret,id=hf_token,target=/run/secrets/hf_token \
-    python export_models.py /export/models
+RUN python export_models.py /export/models
 
 # ── Runtime stage ──────────────────────────────────────────────────
 FROM debian:trixie-slim

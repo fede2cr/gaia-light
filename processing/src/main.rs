@@ -13,6 +13,7 @@ mod db;
 mod download;
 mod frames;
 mod model;
+mod motion;
 mod reporting;
 
 use std::path::PathBuf;
@@ -272,6 +273,26 @@ async fn process_cycle(
             frame_paths.len(),
             clip.filename
         );
+
+        // 3b. Motion pre-filter — skip clips with no inter-frame change
+        let motion = motion::detect_motion(&frame_paths);
+        if !motion.has_motion {
+            info!(
+                "Skipping {} — no motion detected (peak MAD={:.2})",
+                clip.filename, motion.peak_mad
+            );
+            // Mark as processed (zero detections) so we don't re-download
+            if let Err(e) = db.mark_clip_processed(&clip.filename, frame_paths.len(), 0) {
+                warn!("Cannot mark static clip processed: {e:#}");
+            }
+            cleanup_frames(&frame_dir);
+            let _ = std::fs::remove_file(&clip_path);
+            if let Err(e) = capture_client.delete_clip(&clip.filename, discovery).await {
+                warn!("Failed to delete {} from capture server: {e:#}", clip.filename);
+            }
+            processed += 1;
+            continue;
+        }
 
         // 4. Run detection + classification on each frame
         let mut clip_det_count: usize = 0;

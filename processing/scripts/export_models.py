@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export MegaDetector v5a to ONNX and download SpeciesNet files.
+"""Export MegaDetector v5a and SpeciesNet v4.0.1a to ONNX.
 
 Called during container image build (see Containerfile, converter stage).
 
@@ -8,12 +8,18 @@ Usage:
 
 Produces:
     /output/dir/megadetector_v6.onnx      (YOLOv5-based detector)
-    /output/dir/speciesnet.onnx            (species classifier)
-    /output/dir/speciesnet_labels.txt      (species label list)
+    /output/dir/speciesnet.onnx            (EfficientNet V2 M species classifier)
+    /output/dir/speciesnet_labels.txt      (species label list, ~2000+ classes)
+
+Sources:
+    MegaDetector v5a    — agentmorris/MegaDetector on GitHub (MIT)
+    SpeciesNet v4.0.1a  — Addax-Data-Science/SPECIESNET-v4-0-1-A-v1
+                          on HuggingFace (Apache 2.0, public, no auth)
 """
 
 import os
 import sys
+import traceback
 import urllib.request
 
 
@@ -140,68 +146,138 @@ def export_megadetector(output_dir: str) -> None:
     os.remove(weight_path)
 
 
-def download_speciesnet(output_dir: str) -> None:
-    """Download SpeciesNet ONNX model and labels from HuggingFace.
+def _download(url: str, dest: str) -> None:
+    """Download a file with ``requests`` (handles HuggingFace xet/LFS redirects).
 
-    Requires a HuggingFace token for gated repos.  The token is read
-    from (in order):
-      1. The file ``/run/secrets/hf_token`` (Podman/Docker build secret)
-      2. The ``HF_TOKEN`` environment variable
-
-    If no token is available the download will likely fail with HTTP 401
-    for gated models.  This is non-fatal — the detector still works.
+    Falls back to ``urllib`` if ``requests`` is not available.
     """
-    files = {
-        "speciesnet.onnx": (
-            "https://huggingface.co/google/speciesnet/resolve/main/"
-            "speciesnet.onnx"
-        ),
-        "speciesnet_labels.txt": (
-            "https://huggingface.co/google/speciesnet/resolve/main/"
-            "speciesnet_labels.txt"
-        ),
-    }
+    try:
+        import requests as _req
+        print(f"  GET {url}")
+        resp = _req.get(url, stream=True, timeout=600, allow_redirects=True)
+        resp.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                f.write(chunk)
+    except ImportError:
+        urllib.request.urlretrieve(url, dest)
 
-    # Resolve HuggingFace token
-    hf_token = _read_hf_token()
-    if hf_token:
-        print("HuggingFace token found — will use for authenticated downloads")
+
+def export_speciesnet(output_dir: str) -> None:
+    """Download SpeciesNet v4.0.1a weights from Addax and export to ONNX.
+
+    Source: Addax-Data-Science/SPECIESNET-v4-0-1-A-v1 on HuggingFace
+    (public, Apache 2.0 — original Google weights redistributed).
+
+    Architecture: EfficientNet V2 M, 480×480 input, ~2000+ species.
+    The model expects NHWC input (batch, height, width, channels).
+    We wrap it with an NCHW→NHWC permute so the ONNX model accepts
+    standard NCHW layout, consistent with MegaDetector.
+    """
+    import numpy as np
+    import onnx
+    import onnxruntime as ort
+    import torch
+    import timm  # noqa: F401 — must be importable for torch.load to unpickle
+
+    # Addax HuggingFace repo — public, no auth needed
+    base_url = (
+        "https://huggingface.co/Addax-Data-Science/"
+        "SPECIESNET-v4-0-1-A-v1/resolve/main"
+    )
+    pt_url = f"{base_url}/always_crop_99710272_22x8_v12_epoch_00148.pt"
+    labels_url = f"{base_url}/always_crop_99710272_22x8_v12_epoch_00148.labels.txt"
+
+    pt_path = os.path.join(output_dir, "speciesnet.pt")
+    onnx_path = os.path.join(output_dir, "speciesnet.onnx")
+    labels_dest = os.path.join(output_dir, "speciesnet_labels.txt")
+
+    # -- 1. Download labels ------------------------------------------------
+    if not os.path.exists(labels_dest):
+        print(f"Downloading SpeciesNet labels → {labels_dest}")
+        _download(labels_url, labels_dest)
+        n_labels = sum(1 for line in open(labels_dest) if line.strip())
+        print(f"Downloaded labels ({n_labels} classes)")
     else:
-        print("WARNING: No HF_TOKEN found. Gated model downloads may fail (HTTP 401).")
+        n_labels = sum(1 for line in open(labels_dest) if line.strip())
+        print(f"Labels already exist: {labels_dest} ({n_labels} classes)")
 
-    for filename, url in files.items():
-        dest = os.path.join(output_dir, filename)
-        if os.path.exists(dest):
-            print(f"Already exists: {dest}")
-            continue
+    # -- 2. Download PyTorch weights ---------------------------------------
+    if not os.path.exists(pt_path):
+        print(f"Downloading SpeciesNet v4.0.1a weights → {pt_path}")
+        _download(pt_url, pt_path)
+        print(f"Downloaded ({os.path.getsize(pt_path):,} bytes)")
 
-        print(f"Downloading {filename} from {url}")
-        try:
-            req = urllib.request.Request(url)
-            if hf_token:
-                req.add_header("Authorization", f"Bearer {hf_token}")
-            with urllib.request.urlopen(req) as resp:
-                data = resp.read()
-            with open(dest, "wb") as f:
-                f.write(data)
-            print(f"Downloaded {filename} ({os.path.getsize(dest)} bytes)")
-        except Exception as e:
-            print(f"WARNING: Cannot download {filename}: {e}")
-            print("  SpeciesNet classifier will not be available.")
-            print("  The detector will still work without species ID.")
+    # -- 3. Load the model -------------------------------------------------
+    print("Loading SpeciesNet PyTorch model...")
+    print(f"  (timm version: {timm.__version__})")
+    model = torch.load(pt_path, map_location="cpu", weights_only=False)
+    print(f"  Loaded model type: {type(model).__module__}.{type(model).__name__}")
+    model.eval()
 
+    # The Google model expects NHWC input (batch, H, W, C).
+    # Wrap it to accept standard NCHW so our Rust code stays consistent.
+    class NCHWWrapper(torch.nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
 
-def _read_hf_token() -> str | None:
-    """Read the HuggingFace token from a build secret or env var."""
-    # 1. Podman/Docker build secret (preferred — never leaks into layers)
-    secret_path = "/run/secrets/hf_token"
-    if os.path.isfile(secret_path):
-        token = open(secret_path).read().strip()
-        if token:
-            return token
-    # 2. Environment variable fallback
-    token = os.environ.get("HF_TOKEN", "").strip()
-    return token or None
+        def forward(self, x):
+            # [B, C, H, W] → [B, H, W, C]
+            return self.inner(x.permute(0, 2, 3, 1))
+
+    wrapped = NCHWWrapper(model)
+    wrapped.eval()
+
+    # -- 4. Export to ONNX -------------------------------------------------
+    # The .pt is a torch.fx.GraphModule (created by onnx2torch) with
+    # data-dependent shapes.  PyTorch ≥2.6's new dynamo-based ONNX
+    # exporter chokes on these with GuardOnDataDependentSymNode.
+    # Force the legacy TorchScript-based exporter via dynamo=False.
+    print("Exporting SpeciesNet to ONNX (NCHW input, legacy exporter)...")
+    dummy = torch.zeros(1, 3, 480, 480)
+
+    export_kwargs: dict = dict(
+        opset_version=18,
+        input_names=["input"],
+        output_names=["logits"],
+    )
+
+    # dynamo=False was added in PyTorch 2.6 — guard for older versions.
+    import inspect
+    if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+        export_kwargs["dynamo"] = False
+        print("  Using legacy TorchScript exporter (dynamo=False)")
+    else:
+        print("  PyTorch < 2.6 — legacy exporter is the default")
+
+    torch.onnx.export(wrapped, dummy, onnx_path, **export_kwargs)
+
+    # -- 5. Internalize external data if needed ----------------------------
+    data_file = onnx_path + ".data"
+    if os.path.exists(data_file):
+        print("  Internalizing external tensor data into single .onnx file...")
+        model_onnx = onnx.load(onnx_path, load_external_data=True)
+        onnx.save_model(model_onnx, onnx_path, save_as_external_data=False)
+        os.remove(data_file)
+
+    # -- 6. Validate with onnxruntime --------------------------------------
+    print("Validating SpeciesNet ONNX with onnxruntime...")
+    sess = ort.InferenceSession(onnx_path)
+    result = sess.run(None, {"input": np.zeros((1, 3, 480, 480), dtype=np.float32)})
+    shape = result[0].shape
+    print(f"  ONNX validation OK — output shape: {shape}")
+    assert len(shape) == 2, f"Expected 2D output [1, C], got shape {shape}"
+    assert shape[1] == n_labels, (
+        f"Label count mismatch: ONNX outputs {shape[1]} classes "
+        f"but labels file has {n_labels}"
+    )
+
+    print(f"SpeciesNet ONNX ready: {onnx_path} "
+          f"({os.path.getsize(onnx_path):,} bytes, {n_labels} classes)")
+
+    # Clean up .pt to save image space
+    os.remove(pt_path)
 
 
 def main() -> None:
@@ -221,7 +297,12 @@ def main() -> None:
 
     # SpeciesNet is optional — classifier adds species labels but
     # the system works without it (detections still happen)
-    download_speciesnet(output_dir)
+    try:
+        export_speciesnet(output_dir)
+    except Exception as e:
+        print(f"WARNING: SpeciesNet export failed: {e}")
+        traceback.print_exc()
+        print("  The detector will still work without species ID.")
 
     print()
     print("Model export complete. Files in", output_dir + ":")

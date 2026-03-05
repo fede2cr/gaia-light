@@ -16,8 +16,8 @@
 //!
 //! ## SpeciesNet
 //!
-//! Input : `[1, 3, 224, 224]`  (NCHW, RGB, normalised 0-1)
-//! Output: `[1, C]`            (C = number of species classes)
+//! Input : `[1, 3, 480, 480]`  (NCHW, RGB, normalised 0-1)
+//! Output: `[1, C]`            (C = number of species classes, logits)
 
 use std::path::{Path, PathBuf};
 
@@ -260,7 +260,7 @@ pub struct Classifier {
 impl Classifier {
     pub const FILENAME: &'static str = "speciesnet.onnx";
     pub const LABELS_FILE: &'static str = "speciesnet_labels.txt";
-    const INPUT_SIZE: u32 = 224;
+    const INPUT_SIZE: u32 = 480;
 
     /// Load the classifier ONNX model and labels from disk.
     pub fn load(config: &Config) -> Result<Self> {
@@ -272,16 +272,22 @@ impl Classifier {
         let labels = load_labels(&labels_path)?;
         info!("Loaded {} species labels", labels.len());
 
-        let model = tract_onnx::onnx()
+        // Load ONNX; the exported graph has fixed [1,3,480,480] shape.
+        // Use into_typed → concretize_dims (same pattern as detector)
+        // for robustness with any symbolic dimensions.
+        let typed = tract_onnx::onnx()
             .model_for_path(&model_path)
             .context("Cannot parse classifier ONNX model")?
-            .with_input_fact(
-                0,
-                InferenceFact::dt_shape(
-                    f32::datum_type(),
-                    tvec![1, 3, Self::INPUT_SIZE as i64, Self::INPUT_SIZE as i64],
-                ),
-            )?
+            .into_typed()
+            .context("Cannot type classifier model")?;
+
+        // Resolve any symbolic "batch" dimension to concrete 1.
+        let batch = typed.sym("batch");
+        let typed = typed
+            .concretize_dims(&SymbolValues::default().with(&batch, 1))
+            .context("Cannot concretize classifier batch dimension")?;
+
+        let model = typed
             .into_optimized()
             .context("Cannot optimise classifier model")?
             .into_runnable()

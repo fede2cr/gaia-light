@@ -8,12 +8,16 @@
 //! | File                      | Source                          | Size   |
 //! |---------------------------|---------------------------------|--------|
 //! | `megadetector_v6.onnx`    | Baked into container image      | ~280 MB|
-//! | `speciesnet.onnx`         | Baked into container image      | ~90 MB |
-//! | `speciesnet_labels.txt`   | Baked into container image      | ~100 KB|
+//! | `speciesnet.onnx`         | Baked into container image      | ~220 MB|
+//! | `speciesnet_labels.txt`   | Baked / Addax HuggingFace       | ~256 KB|
 //!
 //! If the baked-in files exist (see [`BAKED_MODELS_DIR`]), they are simply
 //! copied into the models volume.  Otherwise, the files are downloaded
 //! from HuggingFace or GitHub.
+//!
+//! Note: `speciesnet.onnx` is converted from PyTorch at build time and
+//! has no public ONNX download URL — it can only come from the baked-in
+//! container layer.  The labels file can be downloaded from Addax.
 //!
 //! This mirrors the pattern used by gaia-audio-processing.
 
@@ -37,13 +41,16 @@ const MODEL_FILES: &[(&str, &str)] = &[
         "megadetector_v6.onnx",
         "https://huggingface.co/ai-for-good-lab/megadetector-onnx/resolve/main/megadetector_v6.onnx",
     ),
+    // speciesnet.onnx is converted from PyTorch at build time — no public
+    // ONNX URL exists.  It can only come from the baked-in container layer.
+    // If missing, the system works without species classification.
     (
         "speciesnet.onnx",
-        "https://huggingface.co/google/speciesnet/resolve/main/speciesnet.onnx",
+        "",
     ),
     (
         "speciesnet_labels.txt",
-        "https://huggingface.co/google/speciesnet/resolve/main/speciesnet_labels.txt",
+        "https://huggingface.co/Addax-Data-Science/SPECIESNET-v4-0-1-A-v1/resolve/main/always_crop_99710272_22x8_v12_epoch_00148.labels.txt",
     ),
 ];
 
@@ -93,6 +100,15 @@ pub fn ensure_models(model_dir: &Path, required_files: &[&str]) -> Vec<String> {
         }
 
         // Try downloading
+        if url.is_empty() {
+            let msg = format!(
+                "{filename} not present and no download URL — \
+                 must be baked into the container image"
+            );
+            warn!("{msg}");
+            errors.push(msg);
+            continue;
+        }
         info!("Downloading {} from {}", filename, url);
         match download_file(url, &dest) {
             Ok(()) => info!("Downloaded {} successfully", filename),
