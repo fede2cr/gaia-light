@@ -274,15 +274,37 @@ async fn process_cycle(
         );
 
         // 4. Run detection + classification on each frame
+        let mut clip_det_count: usize = 0;
         for (frame_idx, frame_path) in frame_paths.iter().enumerate() {
             if SHUTDOWN.load(Ordering::Relaxed) {
                 break;
             }
 
+            info!(
+                "[{}/{}] Analysing frame {} of {}",
+                clip.filename,
+                frame_paths.len(),
+                frame_idx + 1,
+                frame_paths.len()
+            );
+
             match frames::load_image(frame_path) {
                 Ok(img) => {
                     let detections =
                         detector.detect(&img, config.confidence);
+
+                    if detections.is_empty() {
+                        info!(
+                            "[{}/frame {}] No detections",
+                            clip.filename, frame_idx
+                        );
+                    } else {
+                        info!(
+                            "[{}/frame {}] {} detection(s) found",
+                            clip.filename, frame_idx, detections.len()
+                        );
+                        clip_det_count += detections.len();
+                    }
 
                     for det in &detections {
                         // Optionally classify species from crop
@@ -294,7 +316,15 @@ async fn process_cycle(
                                 det.x2,
                                 det.y2,
                             );
-                            c.classify(&crop, config.confidence)
+                            let result = c.classify(&crop, config.confidence);
+                            match &result {
+                                Some(cls) => info!(
+                                    "  → Species: {} ({:.1}%)",
+                                    cls.label, cls.confidence * 100.0
+                                ),
+                                None => debug!("  → No species classification above threshold"),
+                            }
+                            result
                         });
 
                         // Save crop
@@ -349,6 +379,13 @@ async fn process_cycle(
                 }
             }
         }
+
+        info!(
+            "Clip {} complete: {} frame(s) analysed, {} detection(s) total",
+            clip.filename,
+            frame_paths.len(),
+            clip_det_count
+        );
 
         // 5. Update live status with class breakdown, top species, and recent labels
         let class_counts = db.class_counts().unwrap_or_default();

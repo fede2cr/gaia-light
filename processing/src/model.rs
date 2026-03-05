@@ -119,6 +119,9 @@ impl Detector {
         img: &DynamicImage,
         threshold: f64,
     ) -> Vec<Detection> {
+        let (iw, ih) = (img.width(), img.height());
+        debug!("Preprocessing {iw}x{ih} image → {}x{} tensor", self.input_size, self.input_size);
+
         // 1. Preprocess: resize to input_size, convert to CHW float tensor
         let data =
             frames::image_to_chw_f32(img, self.input_size);
@@ -131,6 +134,7 @@ impl Detector {
         .into();
 
         // 2. Run inference
+        let t0 = std::time::Instant::now();
         let outputs = match self.model.run(tvec!(tensor.into())) {
             Ok(o) => o,
             Err(e) => {
@@ -138,6 +142,8 @@ impl Detector {
                 return vec![];
             }
         };
+        let elapsed = t0.elapsed();
+        info!("Detector inference completed in {elapsed:.1?}");
 
         // 3. Parse output tensor
         //    Expected shape: [1, N, 8]
@@ -219,14 +225,24 @@ impl Detector {
             });
         }
 
+        info!(
+            "Detector: {} raw candidates above threshold={threshold:.2}",
+            raw_dets.len()
+        );
+
         // 4. Non-maximum suppression
         let filtered = nms(&mut raw_dets, Self::NMS_IOU);
 
-        debug!(
-            "Detector: {} raw predictions -> {} after NMS (threshold={threshold})",
-            n_predictions,
-            filtered.len()
-        );
+        if filtered.is_empty() {
+            info!("No detections after NMS (from {n_predictions} anchors)");
+        } else {
+            for (i, d) in filtered.iter().enumerate() {
+                info!(
+                    "  Detection {i}: {} ({:.1}%) bbox=[{:.3},{:.3},{:.3},{:.3}]",
+                    d.class, d.confidence * 100.0, d.x1, d.y1, d.x2, d.y2
+                );
+            }
+        }
 
         filtered
     }
