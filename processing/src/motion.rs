@@ -33,15 +33,20 @@ const THUMB_H: u32 = 240;
 
 /// Mean Absolute Difference threshold (0–255 scale).
 ///
-/// Typical values for camera-trap footage:
-///   2–5   → very sensitive (leaf rustle, cloud shadow)
-///   8–15  → moderate (walking animal fills a portion of the frame)
-///   20+   → only large/fast movement
+/// The MAD is computed over the **entire** thumbnail.  An animal that
+/// occupies only 5–10% of the frame dilutes its local pixel delta by
+/// the static background, so global MAD stays low even with significant
+/// movement.  Example: a medium animal covering 10% of the frame with
+/// a local delta of 40 → global MAD ≈ 4.0.
 ///
-/// 5.0 is a conservative default — most real animal activity exceeds
-/// this easily, while electrical noise and subtle lighting drift stay
-/// below it.
-const MOTION_THRESHOLD: f64 = 5.0;
+/// Typical values for camera-trap footage:
+///   0.3–1.0 → sensor noise / compression artefacts (truly static)
+///   1.5–4   → small/distant animal or slow movement
+///   5–15    → large animal or fast movement close to camera
+///
+/// 1.5 lets real captures through while still filtering clips that
+/// are genuinely static (pure background, no trigger-worthy event).
+const MOTION_THRESHOLD: f64 = 1.5;
 
 /// Fraction of pixels that must individually exceed a per-pixel
 /// threshold before the frame pair is flagged as motion.  This is a

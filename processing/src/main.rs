@@ -274,6 +274,20 @@ async fn process_cycle(
             clip.filename
         );
 
+        // 3a′. Always update the camera preview from the first frame
+        //       so the web dashboard shows what the camera sees, even
+        //       when the clip turns out to be static.
+        if let Some(first_frame) = frame_paths.first() {
+            if let Ok(img) = frames::load_image(first_frame) {
+                reporting::save_preview_clean(
+                    &img,
+                    &clip.filename,
+                    0,
+                    &config.recs_dir,
+                );
+            }
+        }
+
         // 3b. Motion pre-filter — skip clips with no inter-frame change
         let motion = motion::detect_motion(&frame_paths);
         if !motion.has_motion {
