@@ -306,6 +306,15 @@ async fn process_cycle(
                         clip_det_count += detections.len();
                     }
 
+                    // Save annotated preview (bounding boxes drawn on frame)
+                    reporting::save_preview(
+                        &img,
+                        &detections,
+                        &clip.filename,
+                        frame_idx,
+                        &config.recs_dir,
+                    );
+
                     for det in &detections {
                         // Optionally classify species from crop
                         let species = classifier.and_then(|c| {

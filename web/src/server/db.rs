@@ -8,8 +8,8 @@ use std::path::Path;
 use rusqlite::{params, Connection};
 
 use crate::model::{
-    ClassSummary, DailyCount, LiveStatus, SpeciesSummary, SystemInfo,
-    WebDetection,
+    ClassSummary, DailyCount, LiveStatus, PreviewInfo, SpeciesSummary,
+    SystemInfo, WebDetection,
 };
 
 // ── Connection helper ────────────────────────────────────────────────────────
@@ -238,4 +238,28 @@ pub fn read_live_status(data_dir: &Path) -> Option<LiveStatus> {
     let path = data_dir.join("live_status.json");
     let text = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+// ── Preview info ─────────────────────────────────────────────────────────────
+
+pub fn preview_info(data_dir: &Path) -> PreviewInfo {
+    let path = data_dir.join("preview_latest.jpg");
+    match std::fs::metadata(&path) {
+        Ok(meta) => {
+            let modified_ms = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            PreviewInfo {
+                available: true,
+                modified_ms,
+            }
+        }
+        Err(_) => PreviewInfo {
+            available: false,
+            modified_ms: 0,
+        },
+    }
 }

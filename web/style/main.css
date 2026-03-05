@@ -132,6 +132,46 @@ h2 { font-size: 1.2rem; margin-bottom: 0.5rem; }
     50% { opacity: 0.3; }
 }
 
+/* ── Camera Preview Panel ────────────────────────────────────────────────── */
+.preview-panel {
+    margin-bottom: 1.5rem;
+}
+
+.preview-panel h2 {
+    font-size: 1.1rem;
+    margin-bottom: 0.75rem;
+    color: #e0e0e0;
+}
+
+.preview-container {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    overflow: hidden;
+    max-width: 800px;
+}
+
+.preview-image {
+    width: 100%;
+    display: block;
+    border-radius: 8px;
+}
+
+.preview-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 1rem;
+    color: #555;
+    gap: 0.75rem;
+}
+
+.preview-placeholder p {
+    margin: 0;
+    font-size: 0.9rem;
+}
+
 /* ── Detection Cards / Grid ─────────────────────────────────────────────── */
 .detection-grid,
 .feed-list {

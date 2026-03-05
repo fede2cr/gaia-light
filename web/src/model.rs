@@ -129,3 +129,14 @@ pub struct SystemInfo {
     pub clips_processed: u64,
     pub db_size_bytes: u64,
 }
+
+// ── Preview info (for cache-busting) ─────────────────────────────────────────
+
+/// Metadata about the latest processing preview image.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewInfo {
+    /// Whether the preview file exists.
+    pub available: bool,
+    /// Unix epoch millis of the file's last modification (used as cache-buster).
+    pub modified_ms: u64,
+}

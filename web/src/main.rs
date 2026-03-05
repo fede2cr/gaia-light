@@ -71,6 +71,11 @@ async fn main() {
             "/extracted",
             ServeDir::new(format!("{}/extracted", &data_dir_str)),
         )
+        // Serve processing preview frames
+        .nest_service(
+            "/preview",
+            ServeDir::new(&data_dir_str),
+        )
         // Serve live status files
         .nest_service(
             "/live",

@@ -1,13 +1,14 @@
-//! Detection reporting: crop extraction and live-status JSON.
+//! Detection reporting: crop extraction, annotated preview, and live-status JSON.
 //!
 //! After each clip is processed the module:
 //! - Saves a JPEG crop for every detection (animal bounding box)
+//! - Writes an annotated preview frame (`preview_latest.jpg`)
 //! - Writes a `live_status.json` file for the web dashboard
 
 use std::path::{Path, PathBuf};
 
-use image::DynamicImage;
-use tracing::{debug, warn};
+use image::{DynamicImage, GenericImageView, Rgb, RgbImage};
+use tracing::{debug, info, warn};
 
 use crate::model::Detection;
 
@@ -89,4 +90,113 @@ pub fn write_live_status(
     if let Err(e) = std::fs::rename(&tmp, &path) {
         warn!("Cannot rename live status: {e}");
     }
+}
+
+// ── Preview frame with bounding boxes ────────────────────────────────────────
+
+/// Colour palette for detection classes.
+fn box_colour(class: &str) -> Rgb<u8> {
+    match class {
+        "animal"  => Rgb([76, 175, 80]),   // green
+        "person"  => Rgb([66, 165, 245]),   // blue
+        "vehicle" => Rgb([255, 152, 0]),    // orange
+        _         => Rgb([158, 158, 158]),  // grey
+    }
+}
+
+/// Draw a rectangle outline on an RGB image (2 px thick).
+fn draw_rect(img: &mut RgbImage, x1: u32, y1: u32, x2: u32, y2: u32, colour: Rgb<u8>) {
+    let (w, h) = img.dimensions();
+    let x2 = x2.min(w.saturating_sub(1));
+    let y2 = y2.min(h.saturating_sub(1));
+
+    for thickness in 0..2u32 {
+        let t = thickness;
+        // Horizontal edges
+        for x in x1.saturating_sub(t)..=x2.saturating_add(t).min(w - 1) {
+            if y1 + t < h { img.put_pixel(x, y1 + t, colour); }
+            if y1 >= t     { img.put_pixel(x, y1 - t, colour); }
+            if y2 + t < h { img.put_pixel(x, y2 + t, colour); }
+            if y2 >= t     { img.put_pixel(x, y2 - t, colour); }
+        }
+        // Vertical edges
+        for y in y1.saturating_sub(t)..=y2.saturating_add(t).min(h - 1) {
+            if x1 + t < w { img.put_pixel(x1 + t, y, colour); }
+            if x1 >= t     { img.put_pixel(x1 - t, y, colour); }
+            if x2 + t < w { img.put_pixel(x2 + t, y, colour); }
+            if x2 >= t     { img.put_pixel(x2 - t, y, colour); }
+        }
+    }
+}
+
+/// Draw a small filled label background above a bounding box.
+fn draw_label_bg(img: &mut RgbImage, x1: u32, y1: u32, label_width: u32, colour: Rgb<u8>) {
+    let (w, h) = img.dimensions();
+    let label_h = 16u32;
+    let ly = y1.saturating_sub(label_h);
+    for y in ly..y1.min(h) {
+        for x in x1..(x1 + label_width).min(w) {
+            img.put_pixel(x, y, colour);
+        }
+    }
+}
+
+/// Save an annotated preview frame with detection bounding boxes drawn.
+///
+/// Writes to `{data_dir}/preview_latest.jpg` atomically (via tmp + rename).
+/// The web dashboard can poll `/preview/preview_latest.jpg` for a live view.
+pub fn save_preview(
+    img: &DynamicImage,
+    detections: &[Detection],
+    clip_name: &str,
+    frame_idx: usize,
+    data_dir: &Path,
+) {
+    let (iw, ih) = img.dimensions();
+    let mut canvas = img.to_rgb8();
+
+    for det in detections {
+        let colour = box_colour(&det.class);
+        let px1 = (det.x1 * iw as f64).round() as u32;
+        let py1 = (det.y1 * ih as f64).round() as u32;
+        let px2 = (det.x2 * iw as f64).round() as u32;
+        let py2 = (det.y2 * ih as f64).round() as u32;
+
+        draw_rect(&mut canvas, px1, py1, px2, py2, colour);
+
+        // Label background (approximate width from text length)
+        let label = format!("{} {:.0}%", det.class, det.confidence * 100.0);
+        let label_w = label.len() as u32 * 7 + 8; // ~7px per char
+        draw_label_bg(&mut canvas, px1, py1, label_w, colour);
+    }
+
+    // Write atomically
+    let dest = data_dir.join("preview_latest.jpg");
+    let tmp = data_dir.join("preview_latest.jpg.tmp");
+
+    let annotated = DynamicImage::ImageRgb8(canvas);
+    match annotated.save(&tmp) {
+        Ok(()) => {
+            if let Err(e) = std::fs::rename(&tmp, &dest) {
+                warn!("Cannot rename preview: {e}");
+            } else {
+                debug!(
+                    "Saved preview: {} ({iw}x{ih}, {} detections, {clip_name} frame {frame_idx})",
+                    dest.display(),
+                    detections.len()
+                );
+            }
+        }
+        Err(e) => warn!("Cannot save preview: {e}"),
+    }
+}
+
+/// Save a preview for a frame with no detections (clean image, no boxes).
+pub fn save_preview_clean(
+    img: &DynamicImage,
+    clip_name: &str,
+    frame_idx: usize,
+    data_dir: &Path,
+) {
+    save_preview(img, &[], clip_name, frame_idx, data_dir);
 }

@@ -4,7 +4,7 @@ use leptos::*;
 
 use crate::components::detection_card::DetectionCard;
 use crate::components::stats_bar::StatsBar;
-use crate::model::{LiveStatus, SystemInfo, WebDetection};
+use crate::model::{LiveStatus, PreviewInfo, SystemInfo, WebDetection};
 
 // ── Server functions ─────────────────────────────────────────────────────────
 
@@ -34,6 +34,13 @@ pub async fn get_live_status() -> Result<Option<LiveStatus>, ServerFnError> {
     Ok(crate::server::db::read_live_status(&state.data_dir))
 }
 
+#[server(GetPreviewInfo, "/api")]
+pub async fn get_preview_info() -> Result<PreviewInfo, ServerFnError> {
+    let state = use_context::<crate::app::AppState>()
+        .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
+    Ok(crate::server::db::preview_info(&state.data_dir))
+}
+
 // ── Page component ───────────────────────────────────────────────────────────
 
 /// Live detection feed with auto-polling and system stats.
@@ -46,6 +53,39 @@ pub fn Home() -> impl IntoView {
         create_resource(|| (), |_| async { get_system_info().await });
     let live =
         create_resource(|| (), |_| async { get_live_status().await });
+
+    // Preview: poll server for file modification time to cache-bust the <img>
+    let (preview_ts, set_preview_ts) = create_signal::<u64>(0);
+    let (preview_avail, set_preview_avail) = create_signal(false);
+
+    // Initial preview check
+    let preview_res =
+        create_resource(|| (), |_| async { get_preview_info().await });
+    create_effect(move |_| {
+        if let Some(Ok(info)) = preview_res.get() {
+            set_preview_avail.set(info.available);
+            set_preview_ts.set(info.modified_ms);
+        }
+    });
+
+    // Auto-refresh preview every 3 seconds
+    #[cfg(feature = "hydrate")]
+    {
+        set_interval_with_handle(
+            move || {
+                spawn_local(async move {
+                    if let Ok(info) = get_preview_info().await {
+                        set_preview_avail.set(info.available);
+                        if info.modified_ms != preview_ts.get_untracked() {
+                            set_preview_ts.set(info.modified_ms);
+                        }
+                    }
+                });
+            },
+            std::time::Duration::from_secs(3),
+        )
+        .ok();
+    }
 
     // Live feed signal for auto-refresh
     let (feed, set_feed) = create_signal::<Vec<WebDetection>>(vec![]);
@@ -120,6 +160,39 @@ pub fn Home() -> impl IntoView {
                     }.into_view(),
                 })}
             </Suspense>
+
+            // Camera preview panel
+            <section class="preview-panel">
+                <h2>"Camera Preview"</h2>
+                <div class="preview-container">
+                    {move || {
+                        if preview_avail.get() {
+                            let ts = preview_ts.get();
+                            let src = format!("/preview/preview_latest.jpg?t={ts}");
+                            view! {
+                                <img
+                                    class="preview-image"
+                                    src={src}
+                                    alt="Latest processed frame"
+                                />
+                            }.into_view()
+                        } else {
+                            view! {
+                                <div class="preview-placeholder">
+                                    <svg viewBox="0 0 24 24" width="48" height="48"
+                                         fill="none" stroke="currentColor" stroke-width="1">
+                                        <rect x="2" y="3" width="20" height="14" rx="2"/>
+                                        <circle cx="12" cy="10" r="3"/>
+                                        <path d="M2 17l20 0"/>
+                                        <circle cx="12" cy="21" r="1"/>
+                                    </svg>
+                                    <p>"Waiting for first frame..."</p>
+                                </div>
+                            }.into_view()
+                        }
+                    }}
+                </div>
+            </section>
 
             // Detection feed
             <section class="live-feed">
