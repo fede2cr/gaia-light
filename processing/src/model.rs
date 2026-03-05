@@ -83,7 +83,7 @@ impl Detector {
         let model_path = find_onnx(&config.model_dir, Self::FILENAME)?;
         info!("Loading detector from {}", model_path.display());
 
-        let model = tract_onnx::onnx()
+        let inference = tract_onnx::onnx()
             .model_for_path(&model_path)
             .context("Cannot parse ONNX model")?
             .with_input_fact(
@@ -92,7 +92,19 @@ impl Detector {
                     f32::datum_type(),
                     tvec![1, 3, Self::INPUT_SIZE as i64, Self::INPUT_SIZE as i64],
                 ),
-            )?
+            )?;
+
+        // Convert to typed model, then resolve any symbolic "batch"
+        // dimension left over from ONNX dynamic_axes export.
+        let typed = inference
+            .into_typed()
+            .context("Cannot type model")?;
+        let batch = typed.sym("batch");
+        let typed = typed
+            .concretize_dims(&SymbolValues::default().with(&batch, 1))
+            .context("Cannot concretize batch dimension")?;
+
+        let model = typed
             .into_optimized()
             .context("Cannot optimise model")?
             .into_runnable()

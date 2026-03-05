@@ -73,6 +73,11 @@ COPY --from=builder /build/target/release/gaia-light-processing /usr/local/bin/g
 # Bake converted models into the image so they can be seeded on first start
 COPY --from=converter /export/models/ /usr/local/share/gaia/models/
 
+# ── Smoke-test: verify the ONNX models load correctly in tract ─────
+# This fails the build if the exported model is incompatible, catching
+# issues before the image is shipped.
+RUN gaia-light-processing --check-models /usr/local/share/gaia/models
+
 RUN mkdir -p /etc/gaia /data /models
 
 # Default config -- override by mounting your own

@@ -36,12 +36,19 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // ── Check for --check-models (build-time smoke test) ─────────
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--check-models") {
+        return check_models(&args);
+    }
+
     // ── Load config ──────────────────────────────────────────────
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| Config::default_path().to_string());
+    let config_path = args
+        .get(1)
+        .map(|s| s.as_str())
+        .unwrap_or_else(|| Config::default_path());
     let config =
-        gaia_light_common::config::load(&PathBuf::from(&config_path))
+        gaia_light_common::config::load(&PathBuf::from(config_path))
             .context("Config load failed")?;
 
     info!(
@@ -397,4 +404,83 @@ fn cleanup_frames(dir: &std::path::Path) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+// ── Build-time smoke test ────────────────────────────────────────────
+
+/// Load ONNX models from a given directory, run a dummy inference on
+/// each, and exit.  Called with `--check-models <model_dir>`.
+///
+/// This is executed as part of the container build to fail early if the
+/// exported ONNX is incompatible with tract.
+fn check_models(args: &[String]) -> Result<()> {
+    use image::DynamicImage;
+
+    // Parse model dir from args: --check-models <dir>
+    let model_dir = args
+        .iter()
+        .position(|a| a == "--check-models")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/usr/local/share/gaia/models"));
+
+    info!("=== Model smoke-test ===");
+    info!("Model directory: {}", model_dir.display());
+
+    // Build a minimal config pointing at the model dir
+    let config = Config {
+        latitude: 0.0,
+        longitude: 0.0,
+        confidence: 0.5,
+        segment_length: 60,
+        capture_fps: 0,
+        capture_width: 0,
+        capture_height: 0,
+        video_device: None,
+        rtsp_streams: vec![],
+        recs_dir: PathBuf::from("/tmp"),
+        extracted_dir: PathBuf::from("/tmp"),
+        model_dir: model_dir.clone(),
+        model_slugs: vec!["pytorch-wildlife".into()],
+        processing_instance: "smoke-test".into(),
+        db_path: PathBuf::from("/tmp/smoke-test.db"),
+        capture_listen_addr: "0.0.0.0:8090".into(),
+        capture_server_url: "http://localhost:8090".into(),
+        poll_interval_secs: 5,
+    };
+
+    // --- Detector ---------------------------------------------------------
+    info!("Loading detector ({})...", model::Detector::FILENAME);
+    let detector = model::Detector::load(&config)
+        .context("Detector model failed to load")?;
+    info!("Detector loaded — running dummy inference...");
+
+    // Tiny 8×8 black image — enough to exercise the full graph.
+    let dummy = DynamicImage::new_rgb8(8, 8);
+    let detections = detector.detect(&dummy, 0.99);
+    info!(
+        "Detector smoke-test OK ({} detections on blank image)",
+        detections.len()
+    );
+
+    // --- Classifier (optional) --------------------------------------------
+    let classifier_path = model_dir.join(model::Classifier::FILENAME);
+    if classifier_path.exists() {
+        info!("Loading classifier ({})...", model::Classifier::FILENAME);
+        let classifier = model::Classifier::load(&config)
+            .context("Classifier model failed to load")?;
+        info!("Classifier loaded — running dummy inference...");
+
+        let crop = DynamicImage::new_rgb8(8, 8);
+        let _result = classifier.classify(&crop, 0.01);
+        info!("Classifier smoke-test OK");
+    } else {
+        info!(
+            "Classifier model ({}) not present — skipping (optional)",
+            model::Classifier::FILENAME
+        );
+    }
+
+    info!("=== All model checks passed ===");
+    Ok(())
 }
