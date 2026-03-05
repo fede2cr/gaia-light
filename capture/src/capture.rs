@@ -78,7 +78,7 @@ pub fn start(config: &Config) -> Result<CaptureHandle> {
 fn start_v4l2(config: &Config, device: &str) -> Result<CaptureHandle> {
     let output_pattern = config
         .stream_data_dir()
-        .join("%F-camera-v4l2-%H:%M:%S.mp4");
+        .join("%F-camera-v4l2-%H%M%S.mp4");
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);
@@ -190,7 +190,7 @@ fn start_rtsp(config: &Config) -> Result<CaptureHandle> {
         let stream_idx = i + 1;
         let output_pattern = config
             .stream_data_dir()
-            .join(format!("%F-camera-RTSP_{stream_idx}-%H:%M:%S.mp4"));
+            .join(format!("%F-camera-RTSP_{stream_idx}-%H%M%S.mp4"));
 
         let timeout_args = if url.starts_with("rtsp://") || url.starts_with("rtsps://") {
             vec!["-timeout".to_string(), "10000000".to_string()]

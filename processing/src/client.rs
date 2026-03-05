@@ -17,6 +17,21 @@ use gaia_light_common::protocol::ClipInfo;
 /// How long to scan mDNS when looking for a capture peer.
 const MDNS_BROWSE_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Percent-encode a filename for use in a URL path segment.
+/// Encodes everything except unreserved characters (RFC 3986).
+fn encode_path_segment(s: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+            | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => { let _ = write!(out, "%{b:02X}"); }
+        }
+    }
+    out
+}
+
 /// Client that talks to one or more capture servers.
 pub struct CaptureClient {
     http: reqwest::Client,
@@ -112,7 +127,7 @@ impl CaptureClient {
         dest: &Path,
         discovery: Option<&DiscoveryHandle>,
     ) -> Result<()> {
-        let url = format!("{}/api/clips/{}", self.base_url(discovery), name);
+        let url = format!("{}/api/clips/{}", self.base_url(discovery), encode_path_segment(name));
         info!("Downloading clip: {name}");
 
         let resp = self
@@ -147,7 +162,7 @@ impl CaptureClient {
 
     /// Tell the capture server to delete a clip we have finished processing.
     pub async fn delete_clip(&self, name: &str, discovery: Option<&DiscoveryHandle>) -> Result<()> {
-        let url = format!("{}/api/clips/{}", self.base_url(discovery), name);
+        let url = format!("{}/api/clips/{}", self.base_url(discovery), encode_path_segment(name));
         debug!("DELETE {url}");
 
         let resp = self
