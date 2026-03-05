@@ -47,8 +47,8 @@ pub async fn run(
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/clips", get(list_clips))
-        .route("/api/clips/{name}", get(download_clip))
-        .route("/api/clips/{name}", delete(delete_clip))
+        .route("/api/clips/:name", get(download_clip))
+        .route("/api/clips/:name", delete(delete_clip))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
