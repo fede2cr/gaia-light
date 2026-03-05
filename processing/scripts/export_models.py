@@ -143,9 +143,13 @@ def export_megadetector(output_dir: str) -> None:
 def download_speciesnet(output_dir: str) -> None:
     """Download SpeciesNet ONNX model and labels from HuggingFace.
 
-    These are placeholder URLs — replace with actual public links once
-    Google publishes the official ONNX export.  If unavailable, the
-    processing server will start without a classifier and log a warning.
+    Requires a HuggingFace token for gated repos.  The token is read
+    from (in order):
+      1. The file ``/run/secrets/hf_token`` (Podman/Docker build secret)
+      2. The ``HF_TOKEN`` environment variable
+
+    If no token is available the download will likely fail with HTTP 401
+    for gated models.  This is non-fatal — the detector still works.
     """
     files = {
         "speciesnet.onnx": (
@@ -158,6 +162,13 @@ def download_speciesnet(output_dir: str) -> None:
         ),
     }
 
+    # Resolve HuggingFace token
+    hf_token = _read_hf_token()
+    if hf_token:
+        print("HuggingFace token found — will use for authenticated downloads")
+    else:
+        print("WARNING: No HF_TOKEN found. Gated model downloads may fail (HTTP 401).")
+
     for filename, url in files.items():
         dest = os.path.join(output_dir, filename)
         if os.path.exists(dest):
@@ -166,12 +177,31 @@ def download_speciesnet(output_dir: str) -> None:
 
         print(f"Downloading {filename} from {url}")
         try:
-            urllib.request.urlretrieve(url, dest)
+            req = urllib.request.Request(url)
+            if hf_token:
+                req.add_header("Authorization", f"Bearer {hf_token}")
+            with urllib.request.urlopen(req) as resp:
+                data = resp.read()
+            with open(dest, "wb") as f:
+                f.write(data)
             print(f"Downloaded {filename} ({os.path.getsize(dest)} bytes)")
         except Exception as e:
             print(f"WARNING: Cannot download {filename}: {e}")
             print("  SpeciesNet classifier will not be available.")
             print("  The detector will still work without species ID.")
+
+
+def _read_hf_token() -> str | None:
+    """Read the HuggingFace token from a build secret or env var."""
+    # 1. Podman/Docker build secret (preferred — never leaks into layers)
+    secret_path = "/run/secrets/hf_token"
+    if os.path.isfile(secret_path):
+        token = open(secret_path).read().strip()
+        if token:
+            return token
+    # 2. Environment variable fallback
+    token = os.environ.get("HF_TOKEN", "").strip()
+    return token or None
 
 
 def main() -> None:

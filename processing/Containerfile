@@ -59,7 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /export
 
 COPY processing/scripts/export_models.py .
-RUN python export_models.py /export/models
+RUN --mount=type=secret,id=hf_token,target=/run/secrets/hf_token \
+    python export_models.py /export/models
 
 # ── Runtime stage ──────────────────────────────────────────────────
 FROM debian:trixie-slim

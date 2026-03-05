@@ -170,9 +170,9 @@ pub fn save_preview(
         draw_label_bg(&mut canvas, px1, py1, label_w, colour);
     }
 
-    // Write atomically
+    // Write atomically — use a .jpg tmp name so `image` recognises the format
     let dest = data_dir.join("preview_latest.jpg");
-    let tmp = data_dir.join("preview_latest.jpg.tmp");
+    let tmp = data_dir.join(".preview_latest.tmp.jpg");
 
     let annotated = DynamicImage::ImageRgb8(canvas);
     match annotated.save(&tmp) {
