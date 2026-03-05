@@ -10,6 +10,7 @@
 
 mod client;
 mod db;
+mod download;
 mod frames;
 mod model;
 mod reporting;
@@ -60,6 +61,25 @@ async fn main() -> Result<()> {
     let db = db::Database::open(&config.db_path)
         .context("Cannot open SQLite database")?;
     info!("Database ready at {}", config.db_path.display());
+
+    // ── Ensure model files are present ────────────────────────
+    // Seed from baked-in container image, or download from URLs.
+    let required_files: Vec<&str> = {
+        let mut files = vec![model::Detector::FILENAME];
+        // Only require classifier files if speciesnet is in model_slugs
+        if config.model_slugs.iter().any(|s| s.contains("speciesnet")) {
+            files.push(model::Classifier::FILENAME);
+            files.push(model::Classifier::LABELS_FILE);
+        }
+        files
+    };
+    let dl_errors = download::ensure_models(&config.model_dir, &required_files);
+    if !dl_errors.is_empty() {
+        for e in &dl_errors {
+            warn!("Model download issue: {e}");
+        }
+        info!("Some models unavailable -- will retry loading each cycle");
+    }
 
     // ── Load models ──────────────────────────────────────────────
     let detector = match model::Detector::load(&config) {

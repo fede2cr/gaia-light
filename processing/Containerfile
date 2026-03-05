@@ -37,14 +37,41 @@ RUN touch common/src/lib.rs processing/src/main.rs
 # Build for real
 RUN cargo build --release -p gaia-light-processing
 
+# ── Model converter stage ──────────────────────────────────────────
+# Export MegaDetector v5a to ONNX via torch.hub + yolov5 and download
+# SpeciesNet.  The ONNX files are baked into the final image so the
+# processing container works immediately without network access.
+FROM python:3.11-slim AS converter
+
+# git is needed by torch.hub to clone the ultralytics/yolov5 repo,
+# which provides the models.yolo module required to deserialize the
+# MegaDetector v5a checkpoint.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git cmake build-essential libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir \
+       torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir \
+       numpy opencv-python-headless pandas requests pyyaml scipy seaborn \
+       ipython tqdm matplotlib psutil \
+       onnx onnxruntime onnxsim onnxscript
+
+WORKDIR /export
+
+COPY processing/scripts/export_models.py .
+RUN python export_models.py /export/models
+
 # ── Runtime stage ──────────────────────────────────────────────────
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/gaia-light-processing /usr/local/bin/gaia-light-processing
+
+# Bake converted models into the image so they can be seeded on first start
+COPY --from=converter /export/models/ /usr/local/share/gaia/models/
 
 RUN mkdir -p /etc/gaia /data /models
 

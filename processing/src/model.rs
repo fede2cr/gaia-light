@@ -72,7 +72,7 @@ type TypedRunnableModel<M> = RunnableModel<TypedFact, Box<dyn TypedOp>, M>;
 
 impl Detector {
     /// Expected ONNX filename inside the model directory.
-    const FILENAME: &'static str = "megadetector_v6.onnx";
+    pub const FILENAME: &'static str = "megadetector_v6.onnx";
     /// Input image dimension (square).
     const INPUT_SIZE: u32 = 640;
     /// IoU threshold for non-maximum suppression.
@@ -235,8 +235,8 @@ pub struct Classifier {
 }
 
 impl Classifier {
-    const FILENAME: &'static str = "speciesnet.onnx";
-    const LABELS_FILE: &'static str = "speciesnet_labels.txt";
+    pub const FILENAME: &'static str = "speciesnet.onnx";
+    pub const LABELS_FILE: &'static str = "speciesnet_labels.txt";
     const INPUT_SIZE: u32 = 224;
 
     /// Load the classifier ONNX model and labels from disk.
