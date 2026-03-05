@@ -24,6 +24,8 @@ pub struct DetectionRow {
     pub bbox_y2: f64,
     pub species: Option<String>,
     pub species_confidence: Option<f64>,
+    /// Which classifier model produced the species label.
+    pub species_model: Option<String>,
     pub crop_path: Option<String>,
     pub latitude: f64,
     pub longitude: f64,
@@ -72,6 +74,7 @@ impl Database {
                 bbox_y2             REAL NOT NULL,
                 species             TEXT,
                 species_confidence  REAL,
+                species_model       TEXT,
                 crop_path           TEXT,
                 latitude            REAL,
                 longitude           REAL,
@@ -103,7 +106,30 @@ impl Database {
                 processed_at TEXT NOT NULL DEFAULT (datetime('now')),
                 frame_count INTEGER,
                 detection_count INTEGER
-            );",
+            );
+
+            -- High-confidence animal detections with no species label,
+            -- saved as training candidates for future classifier models.
+            CREATE TABLE IF NOT EXISTS training_candidates (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp       TEXT NOT NULL,
+                clip_filename   TEXT NOT NULL,
+                frame_index     INTEGER NOT NULL,
+                confidence      REAL NOT NULL,
+                bbox_x1         REAL NOT NULL,
+                bbox_y1         REAL NOT NULL,
+                bbox_x2         REAL NOT NULL,
+                bbox_y2         REAL NOT NULL,
+                crop_path       TEXT,
+                latitude        REAL,
+                longitude       REAL,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_training_confidence
+                ON training_candidates (confidence DESC);
+            CREATE INDEX IF NOT EXISTS idx_training_created
+                ON training_candidates (created_at);",
         )
         .context("Cannot create schema")?;
 
@@ -117,10 +143,10 @@ impl Database {
             "INSERT INTO detections (
                 timestamp, clip_filename, frame_index, detector_model,
                 class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                species, species_confidence, crop_path,
+                species, species_confidence, species_model, crop_path,
                 latitude, longitude, processing_instance
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                      ?11, ?12, ?13, ?14, ?15, ?16)",
+                      ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             rusqlite::params![
                 d.timestamp,
                 d.clip_filename,
@@ -134,6 +160,7 @@ impl Database {
                 d.bbox_y2,
                 d.species,
                 d.species_confidence,
+                d.species_model,
                 d.crop_path,
                 d.latitude,
                 d.longitude,
@@ -157,6 +184,42 @@ impl Database {
         )?;
 
         Ok(id as i64)
+    }
+
+    /// Insert a high-confidence animal detection (with no species label)
+    /// as a training candidate for future classifier models.
+    pub fn insert_training_candidate(&self, d: &DetectionRow) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO training_candidates (
+                timestamp, clip_filename, frame_index, confidence,
+                bbox_x1, bbox_y1, bbox_x2, bbox_y2,
+                crop_path, latitude, longitude
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                d.timestamp,
+                d.clip_filename,
+                d.frame_index,
+                d.confidence,
+                d.bbox_x1,
+                d.bbox_y1,
+                d.bbox_x2,
+                d.bbox_y2,
+                d.crop_path,
+                d.latitude,
+                d.longitude,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Count how many training candidates are stored.
+    pub fn training_candidate_count(&self) -> Result<i64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM training_candidates",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
 
     /// Record that a clip has been fully processed.
@@ -213,7 +276,7 @@ impl Database {
         let mut stmt = self.conn.prepare_cached(
             "SELECT timestamp, clip_filename, frame_index, detector_model,
                     class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                    species, species_confidence, crop_path,
+                    species, species_confidence, species_model, crop_path,
                     latitude, longitude, processing_instance
              FROM detections
              ORDER BY created_at DESC
@@ -235,10 +298,11 @@ impl Database {
                     bbox_y2: row.get(9)?,
                     species: row.get(10)?,
                     species_confidence: row.get(11)?,
-                    crop_path: row.get(12)?,
-                    latitude: row.get(13)?,
-                    longitude: row.get(14)?,
-                    processing_instance: row.get(15)?,
+                    species_model: row.get(12)?,
+                    crop_path: row.get(13)?,
+                    latitude: row.get(14)?,
+                    longitude: row.get(15)?,
+                    processing_instance: row.get(16)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -293,6 +357,7 @@ mod tests {
             bbox_y2: 0.5,
             species: Some("deer".into()),
             species_confidence: Some(0.8),
+            species_model: Some("speciesnet".into()),
             crop_path: None,
             latitude: 42.0,
             longitude: -72.0,

@@ -424,6 +424,185 @@ h2 { font-size: 1.2rem; margin-bottom: 0.5rem; }
     margin-bottom: 0.75rem;
 }
 
+/* ── Settings Form ──────────────────────────────────────────────────────── */
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.form-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.form-row label {
+    flex: 0 0 220px;
+    color: #aaa;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.form-row input[type="number"] {
+    flex: 1;
+    max-width: 160px;
+    padding: 0.4rem 0.6rem;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 0.85rem;
+    font-family: "SF Mono", "Fira Code", monospace;
+}
+
+.form-row input[type="number"]:focus {
+    outline: none;
+    border-color: #8bc34a;
+    box-shadow: 0 0 0 2px rgba(139, 195, 74, 0.15);
+}
+
+/* ── Classifier Checkboxes ──────────────────────────────────────────────── */
+.classifier-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.classifier-option {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.75rem;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.classifier-option:hover {
+    border-color: #8bc34a;
+}
+
+.classifier-option input[type="checkbox"] {
+    accent-color: #8bc34a;
+    width: 16px;
+    height: 16px;
+}
+
+.classifier-name {
+    color: #e0e0e0;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
+.classifier-slug {
+    color: #666;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.75rem;
+    margin-left: auto;
+}
+
+/* ── Save Button / Status ───────────────────────────────────────────────── */
+.settings-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.btn-save {
+    padding: 0.55rem 1.4rem;
+    background: #8bc34a;
+    color: #0d1117;
+    border: none;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.btn-save:hover { background: #9ccc65; }
+
+.save-ok {
+    color: #8bc34a;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
+.save-err {
+    color: #ef5350;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
+/* ── Training Candidates Page ────────────────────────────────────────────── */
+.training-page h1 { margin-bottom: 0.25rem; }
+
+.training-stats {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    font-size: 0.85rem;
+    color: #888;
+}
+
+.stat-count { font-weight: 600; color: #ffa726; }
+
+.training-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+}
+
+.training-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    overflow: hidden;
+    transition: border-color 0.15s;
+}
+
+.training-card:hover { border-color: #ffa726; }
+
+.training-crop {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    display: block;
+    background: #0d1117;
+}
+
+.training-crop.placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #555;
+    font-size: 0.8rem;
+}
+
+.training-meta {
+    padding: 0.4rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    font-size: 0.7rem;
+}
+
+.training-ts { color: #888; }
+.training-clip {
+    color: #555;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.65rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
     .nav-bar {

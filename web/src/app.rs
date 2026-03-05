@@ -10,6 +10,7 @@ use crate::pages::{
     home::Home,
     settings::Settings,
     species::Species,
+    training::Training,
 };
 
 /// Server-side application state, provided as Leptos context for server functions.
@@ -46,6 +47,7 @@ pub fn App() -> impl IntoView {
                     <Route path="/detections" view=Detections/>
                     <Route path="/species" view=Species/>
                     <Route path="/settings" view=Settings/>
+                    <Route path="/training" view=Training/>
                 </Routes>
             </main>
         </Router>

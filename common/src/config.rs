@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use tracing::info;
 
+use crate::classifier_kind::ClassifierKind;
+
 /// Application configuration, shared between capture, processing, and web.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -17,6 +19,10 @@ pub struct Config {
 
     // ── detection thresholds (processing) ────────────────────────────
     pub confidence: f64,
+    /// Minimum species-classifier confidence to accept a label.
+    pub species_confidence: f64,
+    /// Maximum frames to analyse per clip (0 = all frames).
+    pub max_frames_per_clip: u32,
 
     // ── recording (capture) ──────────────────────────────────────────
     /// Length of each video segment in seconds.
@@ -40,6 +46,10 @@ pub struct Config {
     // ── model (processing) ───────────────────────────────────────────
     pub model_dir: PathBuf,
     pub model_slugs: Vec<String>,
+    /// Which species classifiers to run on detection crops.
+    /// Parsed from the `CLASSIFIERS` key (comma-separated slugs).
+    /// Default: `[AI4GAmazonV2]`.
+    pub classifiers: Vec<ClassifierKind>,
     pub processing_instance: String,
 
     // ── database (processing / web) ──────────────────────────────────
@@ -101,6 +111,8 @@ pub fn load(path: &Path) -> Result<Config> {
         latitude: get_f64("LATITUDE", -1.0),
         longitude: get_f64("LONGITUDE", -1.0),
         confidence: get_f64("CONFIDENCE", 0.5),
+        species_confidence: get_f64("SPECIES_CONFIDENCE", 0.1),
+        max_frames_per_clip: get_u32("MAX_FRAMES_PER_CLIP", 0),
 
         segment_length: get_u32("SEGMENT_LENGTH", 60),
         capture_fps: get_u32("CAPTURE_FPS", 1),
@@ -120,6 +132,9 @@ pub fn load(path: &Path) -> Result<Config> {
                     .collect()
             })
             .unwrap_or_default(),
+        classifiers: parse_classifiers(
+            &get("CLASSIFIERS").unwrap_or_else(|| "ai4g-amazon-v2".into()),
+        ),
         processing_instance: get("PROCESSING_INSTANCE").unwrap_or_default(),
 
         db_path: PathBuf::from(
@@ -134,6 +149,38 @@ pub fn load(path: &Path) -> Result<Config> {
             .and_then(|v| v.parse().ok())
             .unwrap_or(10),
     })
+}
+
+/// Parse a comma-separated list of classifier slugs into `ClassifierKind`s.
+///
+/// Unknown slugs are logged and skipped.  If nothing valid remains, falls
+/// back to the default (`AI4GAmazonV2`).
+fn parse_classifiers(raw: &str) -> Vec<ClassifierKind> {
+    let mut kinds: Vec<ClassifierKind> = raw
+        .split(',')
+        .filter_map(|s| {
+            let s = s.trim();
+            if s.is_empty() {
+                return None;
+            }
+            match ClassifierKind::from_slug(s) {
+                Some(k) => Some(k),
+                None => {
+                    tracing::warn!("Unknown classifier slug: {s:?} (ignored)");
+                    None
+                }
+            }
+        })
+        .collect();
+
+    // Deduplicate while preserving order
+    let mut seen = std::collections::HashSet::new();
+    kinds.retain(|k| seen.insert(*k));
+
+    if kinds.is_empty() {
+        kinds.push(ClassifierKind::AI4GAmazonV2);
+    }
+    kinds
 }
 
 fn parse_conf(text: &str) -> HashMap<String, String> {

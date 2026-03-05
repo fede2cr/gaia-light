@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export MegaDetector v5a and SpeciesNet v4.0.1a to ONNX.
+"""Export detection and classification models to ONNX.
 
 Called during container image build (see Containerfile, converter stage).
 
@@ -7,14 +7,17 @@ Usage:
     python export_models.py /output/dir
 
 Produces:
-    /output/dir/megadetector_v6.onnx      (YOLOv5-based detector)
-    /output/dir/speciesnet.onnx            (EfficientNet V2 M species classifier)
-    /output/dir/speciesnet_labels.txt      (species label list, ~2000+ classes)
+    /output/dir/megadetector_v6.onnx          (YOLOv5-based detector)
+    /output/dir/speciesnet.onnx               (SpeciesNet species classifier)
+    /output/dir/speciesnet_labels.txt          (species label list)
+    /output/dir/ai4g_amazon_v2.onnx           (AI4G Amazon Rainforest classifier)
+    /output/dir/ai4g_amazon_v2_labels.txt     (Amazon species labels)
 
 Sources:
     MegaDetector v5a    — agentmorris/MegaDetector on GitHub (MIT)
     SpeciesNet v4.0.1a  — Addax-Data-Science/SPECIESNET-v4-0-1-A-v1
                           on HuggingFace (Apache 2.0, public, no auth)
+    AI4G Amazon V2      — microsoft/CameraTraps (pytorch-wildlife) (MIT)
 """
 
 import os
@@ -280,6 +283,102 @@ def export_speciesnet(output_dir: str) -> None:
     os.remove(pt_path)
 
 
+def export_ai4g_amazon_v2(output_dir: str) -> None:
+    """Export the AI4G Amazon Rainforest V2 classifier (pytorch-wildlife) to ONNX.
+
+    This model is part of the microsoft/CameraTraps pytorch-wildlife project.
+    It classifies Amazon rainforest camera-trap crops.
+
+    Architecture : EfficientNet / custom CNN, 224×224 NCHW input
+    Output       : [1, C]  logits over C Amazon species classes
+    """
+    import numpy as np
+    import onnx
+    import onnxruntime as ort
+    import torch
+
+    onnx_path = os.path.join(output_dir, "ai4g_amazon_v2.onnx")
+    labels_dest = os.path.join(output_dir, "ai4g_amazon_v2_labels.txt")
+
+    if os.path.exists(onnx_path) and os.path.exists(labels_dest):
+        print(f"AI4G-Amazon-V2 files already exist, skipping export")
+        return
+
+    # -- 1. Install pytorch-wildlife if not already available ---------------
+    try:
+        import PytorchWildlife  # noqa: F401
+    except ImportError:
+        import subprocess
+        print("Installing pytorch-wildlife (PytorchWildlife)...")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "PytorchWildlife"],
+        )
+        import PytorchWildlife  # noqa: F401
+
+    # -- 2. Load the classification model -----------------------------------
+    print("Loading AI4G Amazon Rainforest V2 classifier from pytorch-wildlife...")
+    from PytorchWildlife.models import classification as pw_cls
+
+    pw_model = pw_cls.AI4GAmazonRainforest(version="v2")
+    inner_model = pw_model.model if hasattr(pw_model, "model") else pw_model
+    inner_model.eval()
+
+    # -- 3. Extract or build labels -----------------------------------------
+    if hasattr(pw_model, "class_names"):
+        labels_list = list(pw_model.class_names.values()) if isinstance(pw_model.class_names, dict) else list(pw_model.class_names)
+    elif hasattr(pw_model, "classes"):
+        labels_list = list(pw_model.classes)
+    else:
+        # Infer from model output size
+        dummy_out = inner_model(torch.zeros(1, 3, 224, 224))
+        n_classes = dummy_out.shape[-1]
+        labels_list = [f"class_{i}" for i in range(n_classes)]
+        print(f"  WARNING: Could not extract class names; using generic labels ({n_classes} classes)")
+
+    with open(labels_dest, "w") as f:
+        for label in labels_list:
+            f.write(f"{label}\n")
+    print(f"  Labels: {len(labels_list)} classes → {labels_dest}")
+
+    # -- 4. Export to ONNX --------------------------------------------------
+    print("Exporting AI4G-Amazon-V2 to ONNX...")
+    dummy = torch.zeros(1, 3, 224, 224)
+
+    export_kwargs = dict(
+        opset_version=18,
+        input_names=["input"],
+        output_names=["logits"],
+    )
+
+    import inspect
+    if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+        export_kwargs["dynamo"] = False
+
+    torch.onnx.export(inner_model, dummy, onnx_path, **export_kwargs)
+
+    # -- 5. Internalize external data if needed ----------------------------
+    data_file = onnx_path + ".data"
+    if os.path.exists(data_file):
+        print("  Internalizing external tensor data...")
+        model_onnx = onnx.load(onnx_path, load_external_data=True)
+        onnx.save_model(model_onnx, onnx_path, save_as_external_data=False)
+        os.remove(data_file)
+
+    # -- 6. Validate -------------------------------------------------------
+    print("Validating AI4G-Amazon-V2 ONNX...")
+    sess = ort.InferenceSession(onnx_path)
+    result = sess.run(None, {"input": np.zeros((1, 3, 224, 224), dtype=np.float32)})
+    shape = result[0].shape
+    print(f"  ONNX validation OK — output shape: {shape}")
+    assert len(shape) == 2, f"Expected 2D [1, C], got {shape}"
+    assert shape[1] == len(labels_list), (
+        f"Label count mismatch: ONNX outputs {shape[1]}, labels has {len(labels_list)}"
+    )
+
+    print(f"AI4G-Amazon-V2 ONNX ready: {onnx_path} "
+          f"({os.path.getsize(onnx_path):,} bytes, {len(labels_list)} classes)")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <output_dir>")
@@ -295,8 +394,9 @@ def main() -> None:
     # MegaDetector is required
     export_megadetector(output_dir)
 
-    # SpeciesNet is optional — classifier adds species labels but
-    # the system works without it (detections still happen)
+    # ── Classifiers (all optional — system works without species ID) ──
+
+    # SpeciesNet
     try:
         export_speciesnet(output_dir)
     except Exception as e:
@@ -304,11 +404,19 @@ def main() -> None:
         traceback.print_exc()
         print("  The detector will still work without species ID.")
 
+    # AI4G Amazon Rainforest V2 (pytorch-wildlife)
+    try:
+        export_ai4g_amazon_v2(output_dir)
+    except Exception as e:
+        print(f"WARNING: AI4G-Amazon-V2 export failed: {e}")
+        traceback.print_exc()
+        print("  The detector will still work without this classifier.")
+
     print()
     print("Model export complete. Files in", output_dir + ":")
     for f in sorted(os.listdir(output_dir)):
         size = os.path.getsize(os.path.join(output_dir, f))
-        print(f"  {f:30s}  {size:>12,} bytes")
+        print(f"  {f:40s}  {size:>12,} bytes")
 
 
 if __name__ == "__main__":

@@ -23,6 +23,9 @@ pub struct WebDetection {
     /// Species classifier confidence.
     #[serde(default)]
     pub species_confidence: Option<f64>,
+    /// Which classifier model produced the species label.
+    #[serde(default)]
+    pub species_model: Option<String>,
     /// Detector model that produced this detection.
     pub detector_model: String,
     /// Source clip filename.
@@ -139,4 +142,41 @@ pub struct PreviewInfo {
     pub available: bool,
     /// Unix epoch millis of the file's last modification (used as cache-buster).
     pub modified_ms: u64,
+}
+
+// ── Training candidate ───────────────────────────────────────────────────────
+
+/// A high-confidence animal detection with no species classification,
+/// saved for future model training.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrainingCandidate {
+    pub id: i64,
+    pub timestamp: String,
+    pub clip_filename: String,
+    pub frame_index: i64,
+    pub confidence: f64,
+    pub bbox_x1: f64,
+    pub bbox_y1: f64,
+    pub bbox_x2: f64,
+    pub bbox_y2: f64,
+    #[serde(default)]
+    pub crop_path: Option<String>,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub created_at: String,
+}
+
+impl TrainingCandidate {
+    /// URL to serve the crop image.
+    pub fn crop_url(&self) -> Option<String> {
+        self.crop_path.as_ref().map(|p| {
+            let filename = p.rsplit('/').next().unwrap_or(p);
+            format!("/extracted/{filename}")
+        })
+    }
+
+    /// Confidence formatted as a percentage string.
+    pub fn confidence_pct(&self) -> String {
+        format!("{:.0}%", self.confidence * 100.0)
+    }
 }

@@ -2,10 +2,22 @@
 //!
 //! ## Supported models
 //!
+//! ### Detection
+//!
 //! | Slug               | Purpose                       | Architecture |
 //! |--------------------|-------------------------------|-------------|
 //! | `pytorch-wildlife` | MegaDetector v6 – detection   | YOLOv5      |
-//! | `speciesnet`       | Google SpeciesNet – species ID | Classifier  |
+//!
+//! ### Classification (species ID)
+//!
+//! | Slug               | Purpose                               | Input   |
+//! |--------------------|---------------------------------------|---------|
+//! | `ai4g-amazon-v2`   | AI4G Amazon Rainforest V2             | 224×224 |
+//! | `speciesnet`       | Google SpeciesNet v4.0.1a             | 480×480 |
+//!
+//! Multiple classifiers can be enabled simultaneously.  Each crop is
+//! classified by all active classifiers and the best result (highest
+//! confidence) is stored.
 //!
 //! ## MegaDetector v6
 //!
@@ -26,6 +38,7 @@ use image::DynamicImage;
 use tract_onnx::prelude::*;
 use tracing::{debug, info};
 
+use gaia_light_common::classifier_kind::ClassifierKind;
 use gaia_light_common::config::Config;
 
 use crate::frames;
@@ -58,6 +71,8 @@ const MD_CLASSES: [&str; 3] = ["animal", "person", "vehicle"];
 pub struct Classification {
     pub label: String,
     pub confidence: f64,
+    /// Which classifier model produced this result.
+    pub model_name: String,
 }
 
 // ── Detector (MegaDetector) ──────────────────────────────────────────────
@@ -248,33 +263,34 @@ impl Detector {
     }
 }
 
-// ── Classifier (SpeciesNet) ──────────────────────────────────────────────
+// ── Classifier ───────────────────────────────────────────────────────────
 
-/// SpeciesNet species classification model.
+/// Species classification model (parameterised by [`ClassifierKind`]).
 pub struct Classifier {
     model: TypedRunnableModel<TypedModel>,
     input_size: u32,
     labels: Vec<String>,
+    /// Which classifier variant is loaded.
+    pub kind: ClassifierKind,
 }
 
 impl Classifier {
-    pub const FILENAME: &'static str = "speciesnet.onnx";
-    pub const LABELS_FILE: &'static str = "speciesnet_labels.txt";
-    const INPUT_SIZE: u32 = 480;
-
     /// Load the classifier ONNX model and labels from disk.
-    pub fn load(config: &Config) -> Result<Self> {
-        let model_path = find_onnx(&config.model_dir, Self::FILENAME)?;
-        let labels_path = config.model_dir.join(Self::LABELS_FILE);
+    pub fn load(config: &Config, kind: ClassifierKind) -> Result<Self> {
+        let model_path = find_onnx(&config.model_dir, kind.onnx_filename())?;
+        let labels_path = config.model_dir.join(kind.labels_filename());
 
-        info!("Loading classifier from {}", model_path.display());
+        info!(
+            "Loading classifier {} from {}",
+            kind.display_name(),
+            model_path.display()
+        );
 
         let labels = load_labels(&labels_path)?;
         info!("Loaded {} species labels", labels.len());
 
-        // Load ONNX; the exported graph has fixed [1,3,480,480] shape.
-        // Use into_typed → concretize_dims (same pattern as detector)
-        // for robustness with any symbolic dimensions.
+        // Load ONNX; use into_typed → concretize_dims (same pattern as
+        // detector) for robustness with any symbolic dimensions.
         let typed = tract_onnx::onnx()
             .model_for_path(&model_path)
             .context("Cannot parse classifier ONNX model")?
@@ -295,8 +311,9 @@ impl Classifier {
 
         Ok(Self {
             model,
-            input_size: Self::INPUT_SIZE,
+            input_size: kind.input_size(),
             labels,
+            kind,
         })
     }
 
@@ -360,8 +377,12 @@ impl Classifier {
             .cloned()
             .unwrap_or_else(|| format!("class_{best_idx}"));
 
-        debug!("Classified as {label} ({confidence:.3})");
-        Some(Classification { label, confidence })
+        debug!("Classified as {label} ({confidence:.3}) by {}", self.kind.slug());
+        Some(Classification {
+            label,
+            confidence,
+            model_name: self.kind.slug().to_string(),
+        })
     }
 }
 

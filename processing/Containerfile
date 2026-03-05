@@ -54,7 +54,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip install --no-cache-dir \
        numpy opencv-python-headless pandas requests pyyaml scipy seaborn \
        ipython tqdm matplotlib psutil \
-       onnx onnxruntime onnxsim onnxscript timm onnx2torch
+       onnx onnxruntime onnxsim onnxscript timm onnx2torch \
+       lightning omegaconf PytorchWildlife
 
 WORKDIR /export
 

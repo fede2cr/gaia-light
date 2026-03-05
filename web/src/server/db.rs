@@ -9,7 +9,7 @@ use rusqlite::{params, Connection};
 
 use crate::model::{
     ClassSummary, DailyCount, LiveStatus, PreviewInfo, SpeciesSummary,
-    SystemInfo, WebDetection,
+    SystemInfo, TrainingCandidate, WebDetection,
 };
 
 // ── Connection helper ────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ pub fn recent_detections(
                 "SELECT id, timestamp, clip_filename, frame_index,
                         detector_model, class, confidence,
                         bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                        species, species_confidence, crop_path,
+                        species, species_confidence, species_model, crop_path,
                         latitude, longitude, processing_instance,
                         created_at
                  FROM detections
@@ -52,7 +52,7 @@ pub fn recent_detections(
                 "SELECT id, timestamp, clip_filename, frame_index,
                         detector_model, class, confidence,
                         bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                        species, species_confidence, crop_path,
+                        species, species_confidence, species_model, crop_path,
                         latitude, longitude, processing_instance,
                         created_at
                  FROM detections
@@ -81,11 +81,12 @@ pub fn recent_detections(
                 bbox_y2: row.get(10)?,
                 species: row.get(11)?,
                 species_confidence: row.get(12)?,
-                crop_path: row.get(13)?,
-                latitude: row.get(14)?,
-                longitude: row.get(15)?,
-                processing_instance: row.get(16)?,
-                created_at: row.get(17)?,
+                species_model: row.get(13)?,
+                crop_path: row.get(14)?,
+                latitude: row.get(15)?,
+                longitude: row.get(16)?,
+                processing_instance: row.get(17)?,
+                created_at: row.get(18)?,
             })
         },
     )?;
@@ -238,6 +239,54 @@ pub fn read_live_status(data_dir: &Path) -> Option<LiveStatus> {
     let path = data_dir.join("live_status.json");
     let text = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+// ── Training candidates ──────────────────────────────────────────────────────
+
+/// Fetch unclassified high-confidence animal crops for model training.
+pub fn training_candidates(
+    db_path: &Path,
+    limit: u32,
+    offset: u32,
+) -> Result<(Vec<TrainingCandidate>, u64), rusqlite::Error> {
+    let conn = open(db_path)?;
+
+    let total: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM training_candidates",
+        [],
+        |row| row.get(0),
+    )?;
+
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, timestamp, clip_filename, frame_index, confidence,
+                bbox_x1, bbox_y1, bbox_x2, bbox_y2,
+                crop_path, latitude, longitude, created_at
+         FROM training_candidates
+         ORDER BY confidence DESC, created_at DESC
+         LIMIT ?1 OFFSET ?2",
+    )?;
+
+    let rows = stmt
+        .query_map(params![limit, offset], |row| {
+            Ok(TrainingCandidate {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                clip_filename: row.get(2)?,
+                frame_index: row.get(3)?,
+                confidence: row.get(4)?,
+                bbox_x1: row.get(5)?,
+                bbox_y1: row.get(6)?,
+                bbox_x2: row.get(7)?,
+                bbox_y2: row.get(8)?,
+                crop_path: row.get(9)?,
+                latitude: row.get(10)?,
+                longitude: row.get(11)?,
+                created_at: row.get(12)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok((rows, total))
 }
 
 // ── Preview info ─────────────────────────────────────────────────────────────

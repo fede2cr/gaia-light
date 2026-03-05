@@ -37,21 +37,25 @@ const BAKED_MODELS_DIR: &str = "/usr/local/share/gaia/models";
 /// The download URLs are only used when the baked-in copy is not available
 /// (e.g. running outside the container, or an older container image).
 const MODEL_FILES: &[(&str, &str)] = &[
+    // ── Detector ─────────────────────────────────────────────────
     (
         "megadetector_v6.onnx",
         "https://huggingface.co/ai-for-good-lab/megadetector-onnx/resolve/main/megadetector_v6.onnx",
     ),
-    // speciesnet.onnx is converted from PyTorch at build time — no public
-    // ONNX URL exists.  It can only come from the baked-in container layer.
-    // If missing, the system works without species classification.
-    (
-        "speciesnet.onnx",
-        "",
-    ),
+
+    // ── Classifier: SpeciesNet v4.0.1a ───────────────────────────
+    // Converted from PyTorch at build time — no public ONNX URL.
+    ("speciesnet.onnx", ""),
     (
         "speciesnet_labels.txt",
         "https://huggingface.co/Addax-Data-Science/SPECIESNET-v4-0-1-A-v1/resolve/main/always_crop_99710272_22x8_v12_epoch_00148.labels.txt",
     ),
+
+    // ── Classifier: AI4G Amazon Rainforest V2 (pytorch-wildlife) ─
+    // Exported at build time from pytorch-wildlife; no public ONNX.
+    ("ai4g_amazon_v2.onnx", ""),
+    ("ai4g_amazon_v2_labels.txt", ""),
+
 ];
 
 /// Ensure all required model files are present in `model_dir`.

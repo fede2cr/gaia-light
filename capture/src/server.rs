@@ -91,8 +91,11 @@ async fn list_clips(
     let entries =
         std::fs::read_dir(dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Only include files that are "settled" (not modified in the last 2 seconds)
-    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+    // Only include files that are "settled" (not modified recently).
+    // ffmpeg's segment muxer writes the moov atom at the very end, so a
+    // file that was recently modified may still be incomplete.  5 seconds
+    // gives enough margin for slow SD cards.
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
 
     for entry in entries.flatten() {
         let path = entry.path();

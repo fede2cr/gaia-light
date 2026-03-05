@@ -69,7 +69,7 @@ async fn main() {
         // Serve extracted crop images
         .nest_service(
             "/extracted",
-            ServeDir::new(format!("{}/extracted", &data_dir_str)),
+            ServeDir::new(format!("{}/Extracted", &data_dir_str)),
         )
         // Serve processing preview frames
         .nest_service(

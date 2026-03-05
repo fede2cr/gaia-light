@@ -74,12 +74,11 @@ async fn main() -> Result<()> {
     // Seed from baked-in container image, or download from URLs.
     let required_files: Vec<&str> = {
         let mut files = vec![model::Detector::FILENAME];
-        // Always try to seed the classifier files — they are baked into
-        // the container image and cost nothing to copy.  Even when
-        // MODEL_SLUGS is unset, the classifier improves results if
-        // the ONNX file exists.
-        files.push(model::Classifier::FILENAME);
-        files.push(model::Classifier::LABELS_FILE);
+        // Seed ONNX + labels for every configured classifier.
+        for kind in &config.classifiers {
+            files.push(kind.onnx_filename());
+            files.push(kind.labels_filename());
+        }
         files
     };
     let dl_errors = download::ensure_models(&config.model_dir, &required_files);
@@ -104,18 +103,22 @@ async fn main() -> Result<()> {
         }
     };
 
-    let classifier = match model::Classifier::load(&config) {
-        Ok(c) => {
-            info!("Classifier model loaded");
-            Some(c)
+    // Load all configured classifiers.  Those whose ONNX file is not
+    // yet available are retried each processing cycle.
+    let mut classifiers: Vec<model::Classifier> = Vec::new();
+    let mut missing_classifiers: Vec<gaia_light_common::classifier_kind::ClassifierKind> = Vec::new();
+    for &kind in &config.classifiers {
+        match model::Classifier::load(&config, kind) {
+            Ok(c) => {
+                info!("Classifier loaded: {}", kind.display_name());
+                classifiers.push(c);
+            }
+            Err(e) => {
+                info!("Classifier {} not available (will retry): {e:#}", kind.slug());
+                missing_classifiers.push(kind);
+            }
         }
-        Err(e) => {
-            info!(
-                "Classifier not available (detections will lack species): {e:#}"
-            );
-            None
-        }
-    };
+    }
 
     // ── mDNS registration ────────────────────────────────────────
     let discovery_handle =
@@ -146,9 +149,12 @@ async fn main() -> Result<()> {
     // ── Main processing loop ─────────────────────────────────────
     let poll_interval = Duration::from_secs(config.poll_interval_secs);
     let mut detector = detector;
-    let mut classifier = classifier;
 
-    info!("Entering processing loop (poll every {}s)", config.poll_interval_secs);
+    info!(
+        "Entering processing loop (poll every {}s, classifiers: [{}])",
+        config.poll_interval_secs,
+        config.classifiers.iter().map(|k| k.slug()).collect::<Vec<_>>().join(", "),
+    );
     while !SHUTDOWN.load(Ordering::Relaxed) {
         // Retry model loading if not yet available
         if detector.is_none() {
@@ -157,20 +163,46 @@ async fn main() -> Result<()> {
                 detector = Some(d);
             }
         }
-        if classifier.is_none() {
-            if let Ok(c) = model::Classifier::load(&config) {
-                info!("Classifier model now available");
-                classifier = Some(c);
+        // Retry any classifiers that failed to load initially
+        missing_classifiers.retain(|&kind| {
+            match model::Classifier::load(&config, kind) {
+                Ok(c) => {
+                    info!("Classifier now available: {}", kind.display_name());
+                    classifiers.push(c);
+                    false // remove from missing list
+                }
+                Err(_) => true, // keep in missing list
             }
-        }
+        });
+
+        // Read runtime settings from the shared volume (written by the
+        // web dashboard settings page).  Overrides take effect each cycle.
+        let rt = gaia_light_common::settings::load(&config.recs_dir);
+        let effective_confidence = rt.confidence.unwrap_or(config.confidence);
+        let effective_species_conf = rt.species_confidence.unwrap_or(config.species_confidence);
+        let effective_poll = rt.poll_interval_secs.unwrap_or(config.poll_interval_secs);
+        let effective_max_frames = rt.max_frames_per_clip.unwrap_or(config.max_frames_per_clip);
+
+        // Filter classifiers to only those selected by runtime settings.
+        // If rt.classifiers is None, use all loaded classifiers.
+        let active_classifiers: Vec<&model::Classifier> = match &rt.classifiers {
+            Some(selected) => classifiers
+                .iter()
+                .filter(|c| selected.contains(&c.kind))
+                .collect(),
+            None => classifiers.iter().collect(),
+        };
 
         match process_cycle(
             &config,
             &capture_client,
             &db,
             detector.as_ref(),
-            classifier.as_ref(),
+            &active_classifiers,
             discovery_handle.as_ref(),
+            effective_confidence,
+            effective_species_conf,
+            effective_max_frames,
         )
         .await
         {
@@ -180,6 +212,7 @@ async fn main() -> Result<()> {
         }
 
         // Sleep in small increments so we respond to shutdown quickly
+        let poll_interval = Duration::from_secs(effective_poll);
         let mut remaining = poll_interval;
         while remaining > Duration::ZERO && !SHUTDOWN.load(Ordering::Relaxed) {
             let step = remaining.min(Duration::from_secs(1));
@@ -202,8 +235,11 @@ async fn process_cycle(
     capture_client: &client::CaptureClient,
     db: &db::Database,
     detector: Option<&model::Detector>,
-    classifier: Option<&model::Classifier>,
+    classifiers: &[&model::Classifier],
     discovery: Option<&discovery::DiscoveryHandle>,
+    effective_confidence: f64,
+    effective_species_conf: f64,
+    effective_max_frames: u32,
 ) -> Result<usize> {
     let detector = match detector {
         Some(d) => d,
@@ -231,6 +267,7 @@ async fn process_cycle(
         if db.is_clip_processed(&clip.filename) {
             debug!("Skipping already-processed clip: {}", clip.filename);
             // Still delete from capture server to free space
+            info!("Requesting capture to delete already-processed clip: {}", clip.filename);
             let _ = capture_client.delete_clip(&clip.filename, discovery).await;
             continue;
         }
@@ -258,6 +295,10 @@ async fn process_cycle(
             Ok(paths) => paths,
             Err(e) => {
                 warn!("Frame extraction failed for {}: {e:#}", clip.filename);
+                // The clip may be truncated (still being written by capture).
+                // Clean up and skip — do NOT delete from capture server so it
+                // can be retried once the file is complete.
+                let _ = std::fs::remove_file(&clip_path);
                 cleanup_frames(&frame_dir);
                 continue;
             }
@@ -289,15 +330,14 @@ async fn process_cycle(
             }
         }
 
-        // 3b. Always run detection on the first frame — even when the
-        //     rest of the clip appears static.  If the first frame
-        //     contains a detection we force full analysis on *all*
-        //     frames (the animal may be present but nearly still).
+        // 3b. Run MegaDetector on the first frame only.
+        //     • Detection found  → process ALL frames (animal present).
+        //     • No detection     → fall through to motion check.
         let first_frame_has_detections = {
             let mut found = false;
             if let Some(first_frame) = frame_paths.first() {
                 if let Ok(img) = frames::load_image(first_frame) {
-                    let dets = detector.detect(&img, config.confidence);
+                    let dets = detector.detect(&img, effective_confidence);
                     if !dets.is_empty() {
                         info!(
                             "[{}/frame 0] First-frame probe: {} detection(s) — will process all frames",
@@ -315,37 +355,41 @@ async fn process_cycle(
             found
         };
 
-        // 3c. Motion pre-filter — skip clips with no inter-frame change
-        //     UNLESS the first-frame probe already found a detection.
-        let motion = motion::detect_motion(&frame_paths);
-        if !motion.has_motion && !first_frame_has_detections {
-            info!(
-                "Skipping {} — no motion and no first-frame detections (peak MAD={:.2})",
-                clip.filename, motion.peak_mad
-            );
-            // Mark as processed (zero detections) so we don't re-download
-            if let Err(e) = db.mark_clip_processed(&clip.filename, frame_paths.len(), 0) {
-                warn!("Cannot mark static clip processed: {e:#}");
+        // 3c. If the first frame had no detections, check for motion.
+        //     No detections + no motion → skip the clip entirely.
+        if !first_frame_has_detections {
+            let motion = motion::detect_motion(&frame_paths);
+            if !motion.has_motion {
+                info!(
+                    "Skipping {} — no first-frame detections and no motion (peak MAD={:.2})",
+                    clip.filename, motion.peak_mad
+                );
+                if let Err(e) = db.mark_clip_processed(&clip.filename, frame_paths.len(), 0) {
+                    warn!("Cannot mark static clip processed: {e:#}");
+                }
+                cleanup_frames(&frame_dir);
+                let _ = std::fs::remove_file(&clip_path);
+                info!("Requesting capture to delete static clip: {}", clip.filename);
+                if let Err(e) = capture_client.delete_clip(&clip.filename, discovery).await {
+                    warn!("Failed to delete {} from capture server: {e:#}", clip.filename);
+                }
+                processed += 1;
+                continue;
             }
-            cleanup_frames(&frame_dir);
-            let _ = std::fs::remove_file(&clip_path);
-            if let Err(e) = capture_client.delete_clip(&clip.filename, discovery).await {
-                warn!("Failed to delete {} from capture server: {e:#}", clip.filename);
-            }
-            processed += 1;
-            continue;
-        }
-
-        if !motion.has_motion && first_frame_has_detections {
             info!(
-                "No motion detected (peak MAD={:.2}) but first frame has detections — processing all frames",
+                "No first-frame detections but motion found (peak MAD={:.2}) — processing all frames",
                 motion.peak_mad
             );
         }
 
         // 4. Run detection + classification on each frame
+        let analysis_frames: &[std::path::PathBuf] = if effective_max_frames > 0 {
+            &frame_paths[..frame_paths.len().min(effective_max_frames as usize)]
+        } else {
+            &frame_paths
+        };
         let mut clip_det_count: usize = 0;
-        for (frame_idx, frame_path) in frame_paths.iter().enumerate() {
+        for (frame_idx, frame_path) in analysis_frames.iter().enumerate() {
             if SHUTDOWN.load(Ordering::Relaxed) {
                 break;
             }
@@ -353,15 +397,15 @@ async fn process_cycle(
             info!(
                 "[{}/{}] Analysing frame {} of {}",
                 clip.filename,
-                frame_paths.len(),
+                analysis_frames.len(),
                 frame_idx + 1,
-                frame_paths.len()
+                analysis_frames.len()
             );
 
             match frames::load_image(frame_path) {
                 Ok(img) => {
                     let detections =
-                        detector.detect(&img, config.confidence);
+                        detector.detect(&img, effective_confidence);
 
                     if detections.is_empty() {
                         info!(
@@ -386,25 +430,44 @@ async fn process_cycle(
                     );
 
                     for det in &detections {
-                        // Optionally classify species from crop
-                        let species = classifier.and_then(|c| {
-                            let crop = frames::crop_detection(
-                                &img,
-                                det.x1,
-                                det.y1,
-                                det.x2,
-                                det.y2,
-                            );
-                            let result = c.classify(&crop, config.confidence);
-                            match &result {
-                                Some(cls) => info!(
-                                    "  → Species: {} ({:.1}%)",
-                                    cls.label, cls.confidence * 100.0
-                                ),
-                                None => debug!("  → No species classification above threshold"),
+                        // Classify species from crop using ALL configured classifiers.
+                        // Keep the best result (highest confidence above threshold).
+                        let crop = frames::crop_detection(
+                            &img,
+                            det.x1,
+                            det.y1,
+                            det.x2,
+                            det.y2,
+                        );
+
+                        let mut best_species: Option<model::Classification> = None;
+                        for cls in classifiers {
+                            if let Some(result) = cls.classify(&crop, effective_species_conf) {
+                                info!(
+                                    "  → [{}] Species: {} ({:.1}%)",
+                                    cls.kind.slug(),
+                                    result.label,
+                                    result.confidence * 100.0,
+                                );
+                                // Keep result with highest confidence
+                                if best_species.as_ref().map_or(true, |b| result.confidence > b.confidence) {
+                                    best_species = Some(result);
+                                }
+                            } else {
+                                debug!("  → [{}] No species above threshold", cls.kind.slug());
                             }
-                            result
-                        });
+                        }
+
+                        if classifiers.is_empty() {
+                            debug!("  → No classifiers configured");
+                        }
+
+                        // Track high-confidence animal detections without a
+                        // species label — useful as training data for future
+                        // classification models.
+                        let is_training_candidate = best_species.is_none()
+                            && det.class == "animal"
+                            && det.confidence >= 0.8;
 
                         // Save crop
                         let crop_path = reporting::save_crop(
@@ -415,38 +478,52 @@ async fn process_cycle(
                             &config.extracted_dir,
                         );
 
+                        // Build detection row
+                        let row = db::DetectionRow {
+                            timestamp: clip.created.clone(),
+                            clip_filename: clip.filename.clone(),
+                            frame_index: frame_idx as i64,
+                            detector_model: det.model_name.clone(),
+                            class: det.class.clone(),
+                            confidence: det.confidence,
+                            bbox_x1: det.x1,
+                            bbox_y1: det.y1,
+                            bbox_x2: det.x2,
+                            bbox_y2: det.y2,
+                            species: best_species
+                                .as_ref()
+                                .map(|s| s.label.clone()),
+                            species_confidence: best_species
+                                .as_ref()
+                                .map(|s| s.confidence),
+                            species_model: best_species
+                                .as_ref()
+                                .map(|s| s.model_name.clone()),
+                            crop_path: crop_path
+                                .map(|p| p.to_string_lossy().to_string()),
+                            latitude: config.latitude,
+                            longitude: config.longitude,
+                            processing_instance: config
+                                .processing_instance
+                                .clone(),
+                        };
+
                         // Insert into DB
-                        if let Err(e) = db.insert_detection(
-                            &db::DetectionRow {
-                                timestamp: clip.created.clone(),
-                                clip_filename: clip.filename.clone(),
-                                frame_index: frame_idx as i64,
-                                detector_model: det.model_name.clone(),
-                                class: det.class.clone(),
-                                confidence: det.confidence,
-                                bbox_x1: det.x1,
-                                bbox_y1: det.y1,
-                                bbox_x2: det.x2,
-                                bbox_y2: det.y2,
-                                species: species
-                                    .as_ref()
-                                    .map(|s| s.label.clone()),
-                                species_confidence: species
-                                    .as_ref()
-                                    .map(|s| s.confidence),
-                                crop_path: crop_path
-                                    .map(|p| p.to_string_lossy().to_string()),
-                                latitude: config.latitude,
-                                longitude: config.longitude,
-                                processing_instance: config
-                                    .processing_instance
-                                    .clone(),
-                            },
-                        ) {
+                        if let Err(e) = db.insert_detection(&row) {
                             error!(
                                 "DB insert failed for {}/{}: {e}",
                                 clip.filename, frame_idx
                             );
+                        }
+
+                        // Track as training candidate if high-confidence
+                        // animal with no species label.
+                        if is_training_candidate {
+                            if let Err(e) = db.insert_training_candidate(&row) {
+                                debug!(
+                                    "Training candidate insert failed: {e}"
+                                );
+                            }
                         }
                     }
                 }
@@ -505,6 +582,7 @@ async fn process_cycle(
         let _ = std::fs::remove_file(&clip_path);
 
         // 8. Tell capture server we're done with this clip
+        info!("Requesting capture to delete processed clip: {}", clip.filename);
         if let Err(e) = capture_client.delete_clip(&clip.filename, discovery).await {
             warn!("Failed to delete {} from capture server: {e:#}", clip.filename);
         }
@@ -550,6 +628,8 @@ fn check_models(args: &[String]) -> Result<()> {
         latitude: 0.0,
         longitude: 0.0,
         confidence: 0.5,
+        species_confidence: 0.1,
+        max_frames_per_clip: 0,
         segment_length: 60,
         capture_fps: 0,
         capture_width: 0,
@@ -560,6 +640,7 @@ fn check_models(args: &[String]) -> Result<()> {
         extracted_dir: PathBuf::from("/tmp"),
         model_dir: model_dir.clone(),
         model_slugs: vec!["pytorch-wildlife".into()],
+        classifiers: vec![],  // populated dynamically below
         processing_instance: "smoke-test".into(),
         db_path: PathBuf::from("/tmp/smoke-test.db"),
         capture_listen_addr: "0.0.0.0:8090".into(),
@@ -581,22 +662,26 @@ fn check_models(args: &[String]) -> Result<()> {
         detections.len()
     );
 
-    // --- Classifier (optional) --------------------------------------------
-    let classifier_path = model_dir.join(model::Classifier::FILENAME);
-    if classifier_path.exists() {
-        info!("Loading classifier ({})...", model::Classifier::FILENAME);
-        let classifier = model::Classifier::load(&config)
-            .context("Classifier model failed to load")?;
-        info!("Classifier loaded — running dummy inference...");
+    // --- Classifiers (optional — smoke-test every ONNX file present) -----
+    use gaia_light_common::classifier_kind::ClassifierKind;
+    for &kind in ClassifierKind::ALL {
+        let onnx_path = model_dir.join(kind.onnx_filename());
+        if onnx_path.exists() {
+            info!("Loading classifier {} ({})...", kind.display_name(), kind.onnx_filename());
+            let classifier = model::Classifier::load(&config, kind)
+                .with_context(|| format!("{} model failed to load", kind.slug()))?;
+            info!("Classifier loaded — running dummy inference...");
 
-        let crop = DynamicImage::new_rgb8(8, 8);
-        let _result = classifier.classify(&crop, 0.01);
-        info!("Classifier smoke-test OK");
-    } else {
-        info!(
-            "Classifier model ({}) not present — skipping (optional)",
-            model::Classifier::FILENAME
-        );
+            let crop = DynamicImage::new_rgb8(8, 8);
+            let _result = classifier.classify(&crop, 0.01);
+            info!("Classifier {} smoke-test OK", kind.slug());
+        } else {
+            info!(
+                "Classifier {} ({}) not present — skipping (optional)",
+                kind.slug(),
+                kind.onnx_filename(),
+            );
+        }
     }
 
     info!("=== All model checks passed ===");

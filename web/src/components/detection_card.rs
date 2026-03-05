@@ -11,21 +11,42 @@ pub fn DetectionCard(detection: WebDetection) -> impl IntoView {
     let confidence_class = detection.confidence_class();
     let label = detection.label();
     let crop_url = detection.crop_url();
-    let timestamp = if detection.created_at.is_empty() {
+    let class_badge = detection.class.clone();
+
+    // Pick the best available timestamp
+    let timestamp = if !detection.created_at.is_empty() {
+        // Format: "2026-03-05 19:08:27" (strip seconds for cleaner display)
+        let ts = &detection.created_at;
+        if ts.len() >= 16 { ts[..16].to_string() } else { ts.clone() }
+    } else if !detection.timestamp.is_empty() {
         detection.timestamp.clone()
     } else {
-        detection.created_at.clone()
+        String::new()
     };
-    let class_badge = detection.class.clone();
-    let model = detection.detector_model.clone();
 
-    let species_info = detection.species.clone().map(|sp| {
+    // Species sub-label with confidence and classifier model
+    let species_line = detection.species.as_ref().and_then(|sp| {
+        if sp.is_empty() { return None; }
         let conf = detection
             .species_confidence
-            .map(|c| format!("{:.0}%", c * 100.0))
+            .map(|c| format!(" ({:.0}%)", c * 100.0))
             .unwrap_or_default();
-        (sp, conf)
+        Some(format!("{sp}{conf}"))
     });
+    let species_model = detection.species_model.clone();
+
+    // Short clip name: drop the date prefix for compactness
+    let clip_short = {
+        let name = &detection.clip_filename;
+        // "2026-03-05-camera-v4l2-185521.mp4" → "camera-v4l2-185521"
+        let stem = name.strip_suffix(".mp4").unwrap_or(name);
+        // Skip the date prefix "YYYY-MM-DD-"
+        if stem.len() > 11 && stem.as_bytes()[4] == b'-' && stem.as_bytes()[7] == b'-' {
+            stem[11..].to_string()
+        } else {
+            stem.to_string()
+        }
+    };
 
     view! {
         <div class="detection-card">
@@ -56,38 +77,22 @@ pub fn DetectionCard(detection: WebDetection) -> impl IntoView {
             // Detection details
             <div class="detection-info">
                 <div class="detection-label">
-                    <span class="label-text">{label}</span>
                     <span class={format!("class-badge class-{class_badge}")}>{&class_badge}</span>
+                    <span class={confidence_class}>{confidence_pct}</span>
                 </div>
 
-                {species_info.map(|(sp, conf)| view! {
+                {species_line.map(|sp| view! {
                     <div class="species-row">
                         <span class="species-name">{sp}</span>
-                        <span class="species-conf">{conf}</span>
+                        {species_model.map(|m| view! {
+                            <span class="species-model" title="Classifier model">{m}</span>
+                        })}
                     </div>
                 })}
 
                 <div class="detection-meta">
-                    <span class={confidence_class}>{confidence_pct}</span>
-                    <span class="model-badge" title="Detection model">{model}</span>
-                </div>
-
-                <div class="detection-timestamp">
-                    <svg class="icon-clock" viewBox="0 0 16 16" width="14" height="14">
-                        <circle cx="8" cy="8" r="7" fill="none"
-                                stroke="currentColor" stroke-width="1.5"/>
-                        <polyline points="8,4 8,8 11,10" fill="none"
-                                  stroke="currentColor" stroke-width="1.5"
-                                  stroke-linecap="round"/>
-                    </svg>
                     <time>{timestamp}</time>
-                </div>
-
-                <div class="detection-source">
-                    <span class="clip-name" title="Source clip">
-                        {detection.clip_filename}
-                    </span>
-                    <span class="frame-idx">"frame " {detection.frame_index.to_string()}</span>
+                    <span class="clip-ref">{clip_short} ":" {detection.frame_index.to_string()}</span>
                 </div>
             </div>
         </div>
