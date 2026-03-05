@@ -86,6 +86,9 @@ def export_megadetector(output_dir: str) -> None:
             m.inplace = False
 
     # -- 3. Export to ONNX --------------------------------------------------
+    # Fixed batch=1 — tract-onnx cannot unify a symbolic "batch" dimension
+    # with literal 1 values that YOLOv5's internal reshapes produce.
+    # We never run with batch>1 so static shape is fine.
     print("Exporting MegaDetector to ONNX...")
     dummy = torch.zeros(1, 3, 640, 640)
     torch.onnx.export(
@@ -93,10 +96,6 @@ def export_megadetector(output_dir: str) -> None:
         opset_version=18,
         input_names=["images"],
         output_names=["output"],
-        dynamic_axes={
-            "images": {0: "batch"},
-            "output": {0: "batch"},
-        },
     )
 
     # -- 4. Internalize external data ---------------------------------------
