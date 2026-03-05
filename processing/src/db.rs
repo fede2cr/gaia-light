@@ -133,6 +133,20 @@ impl Database {
         )
         .context("Cannot create schema")?;
 
+        // ── Migrations for databases created before species_model existed ──
+        // SQLite has no IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we
+        // check the column list first.
+        let has_species_model: bool = conn
+            .prepare("SELECT species_model FROM detections LIMIT 0")
+            .is_ok();
+        if !has_species_model {
+            conn.execute_batch(
+                "ALTER TABLE detections ADD COLUMN species_model TEXT;",
+            )
+            .context("Cannot add species_model column")?;
+            info!("Migrated: added species_model column to detections");
+        }
+
         info!("Database schema initialised at {}", path.display());
         Ok(Self { conn })
     }
