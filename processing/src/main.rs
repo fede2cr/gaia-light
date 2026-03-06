@@ -182,6 +182,7 @@ async fn main() -> Result<()> {
         let effective_species_conf = rt.species_confidence.unwrap_or(config.species_confidence);
         let effective_poll = rt.poll_interval_secs.unwrap_or(config.poll_interval_secs);
         let effective_max_frames = rt.max_frames_per_clip.unwrap_or(config.max_frames_per_clip);
+        let effective_motion_threshold = rt.motion_threshold.unwrap_or(config.motion_threshold);
 
         // Filter classifiers to only those selected by runtime settings.
         // If rt.classifiers is None, use all loaded classifiers.
@@ -203,6 +204,7 @@ async fn main() -> Result<()> {
             effective_confidence,
             effective_species_conf,
             effective_max_frames,
+            effective_motion_threshold,
         )
         .await
         {
@@ -240,6 +242,7 @@ async fn process_cycle(
     effective_confidence: f64,
     effective_species_conf: f64,
     effective_max_frames: u32,
+    effective_motion_threshold: f64,
 ) -> Result<usize> {
     let detector = match detector {
         Some(d) => d,
@@ -358,7 +361,7 @@ async fn process_cycle(
         // 3c. If the first frame had no detections, check for motion.
         //     No detections + no motion → skip the clip entirely.
         if !first_frame_has_detections {
-            let motion = motion::detect_motion(&frame_paths);
+            let motion = motion::detect_motion(&frame_paths, effective_motion_threshold);
             if !motion.has_motion {
                 info!(
                     "Skipping {} — no first-frame detections and no motion (peak MAD={:.2})",
@@ -630,6 +633,7 @@ fn check_models(args: &[String]) -> Result<()> {
         confidence: 0.5,
         species_confidence: 0.1,
         max_frames_per_clip: 0,
+        motion_threshold: 1.5,
         segment_length: 60,
         capture_fps: 0,
         capture_width: 0,

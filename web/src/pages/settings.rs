@@ -21,6 +21,7 @@ pub async fn get_settings() -> Result<SettingsPayload, ServerFnError> {
         species_confidence: rt.species_confidence,
         poll_interval_secs: rt.poll_interval_secs,
         max_frames_per_clip: rt.max_frames_per_clip,
+        motion_threshold: rt.motion_threshold,
         classifiers: rt.classifiers.map(|v| {
             v.iter().map(|k| k.slug().to_string()).collect()
         }),
@@ -33,6 +34,7 @@ pub async fn save_settings(
     species_confidence: Option<f64>,
     poll_interval_secs: Option<u64>,
     max_frames_per_clip: Option<u32>,
+    motion_threshold: Option<f64>,
     classifiers_csv: Option<String>,
 ) -> Result<(), ServerFnError> {
     let state = use_context::<crate::app::AppState>()
@@ -51,6 +53,7 @@ pub async fn save_settings(
         species_confidence,
         poll_interval_secs,
         max_frames_per_clip,
+        motion_threshold,
         classifiers,
     };
 
@@ -70,6 +73,7 @@ pub struct SettingsPayload {
     pub species_confidence: Option<f64>,
     pub poll_interval_secs: Option<u64>,
     pub max_frames_per_clip: Option<u32>,
+    pub motion_threshold: Option<f64>,
     /// Comma-separated classifier slugs (None = use config default).
     pub classifiers: Option<Vec<String>>,
 }
@@ -88,15 +92,16 @@ const CLASSIFIER_OPTIONS: &[(&str, &str)] = &[
 pub fn Settings() -> impl IntoView {
     let settings = create_resource(|| (), |_| async { get_settings().await });
     let save_action = create_action(
-        move |(conf, sp_conf, poll, max_fr, cls_csv): &(
+        move |(conf, sp_conf, poll, max_fr, mt, cls_csv): &(
             Option<f64>,
             Option<f64>,
             Option<u64>,
             Option<u32>,
+            Option<f64>,
             Option<String>,
         )| {
-            let (c, sc, p, mf, csv) = (conf.clone(), sp_conf.clone(), poll.clone(), max_fr.clone(), cls_csv.clone());
-            async move { save_settings(c, sc, p, mf, csv).await }
+            let (c, sc, p, mf, m, csv) = (conf.clone(), sp_conf.clone(), poll.clone(), max_fr.clone(), mt.clone(), cls_csv.clone());
+            async move { save_settings(c, sc, p, mf, m, csv).await }
         },
     );
 
@@ -105,6 +110,7 @@ pub fn Settings() -> impl IntoView {
     let (species_conf, set_species_conf) = create_signal(String::new());
     let (poll_secs, set_poll_secs) = create_signal(String::new());
     let (max_frames, set_max_frames) = create_signal(String::new());
+    let (motion_thresh, set_motion_thresh) = create_signal(String::new());
     let (selected_cls, set_selected_cls) = create_signal(Vec::<String>::new());
 
     // Populate signals from loaded settings
@@ -114,6 +120,7 @@ pub fn Settings() -> impl IntoView {
             set_species_conf.set(s.species_confidence.map(|v| format!("{v}")).unwrap_or_default());
             set_poll_secs.set(s.poll_interval_secs.map(|v| format!("{v}")).unwrap_or_default());
             set_max_frames.set(s.max_frames_per_clip.map(|v| format!("{v}")).unwrap_or_default());
+            set_motion_thresh.set(s.motion_threshold.map(|v| format!("{v}")).unwrap_or_default());
             set_selected_cls.set(
                 s.classifiers
                     .unwrap_or_else(|| vec!["ai4g-amazon-v2".into()]),
@@ -126,11 +133,12 @@ pub fn Settings() -> impl IntoView {
         let sp: Option<f64> = species_conf.get().parse().ok();
         let poll: Option<u64> = poll_secs.get().parse().ok();
         let mf: Option<u32> = max_frames.get().parse().ok();
+        let mt: Option<f64> = motion_thresh.get().parse().ok();
         let cls = {
             let v = selected_cls.get();
             if v.is_empty() { None } else { Some(v.join(",")) }
         };
-        save_action.dispatch((conf, sp, poll, mf, cls));
+        save_action.dispatch((conf, sp, poll, mf, mt, cls));
     };
 
     view! {
@@ -160,7 +168,7 @@ pub fn Settings() -> impl IntoView {
                                     <input
                                         id="confidence"
                                         type="number"
-                                        step="0.05"
+                                        step="any"
                                         min="0" max="1"
                                         placeholder="0.5 (default)"
                                         prop:value={move || confidence.get()}
@@ -172,7 +180,7 @@ pub fn Settings() -> impl IntoView {
                                     <input
                                         id="species_conf"
                                         type="number"
-                                        step="0.05"
+                                        step="any"
                                         min="0" max="1"
                                         placeholder="0.1 (default)"
                                         prop:value={move || species_conf.get()}
@@ -201,6 +209,18 @@ pub fn Settings() -> impl IntoView {
                                         placeholder="0 (all)"
                                         prop:value={move || max_frames.get()}
                                         on:input=move |ev| set_max_frames.set(event_target_value(&ev))
+                                    />
+                                </div>
+                                <div class="form-row">
+                                    <label for="motion_thresh">"Motion threshold (MAD, 0\u{2013}255)"</label>
+                                    <input
+                                        id="motion_thresh"
+                                        type="number"
+                                        step="any"
+                                        min="0" max="255"
+                                        placeholder="1.5 (default)"
+                                        prop:value={move || motion_thresh.get()}
+                                        on:input=move |ev| set_motion_thresh.set(event_target_value(&ev))
                                     />
                                 </div>
                             </div>

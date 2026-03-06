@@ -23,6 +23,8 @@ pub struct Config {
     pub species_confidence: f64,
     /// Maximum frames to analyse per clip (0 = all frames).
     pub max_frames_per_clip: u32,
+    /// Motion-detection threshold (MAD on 0–255 scale, default 1.5).
+    pub motion_threshold: f64,
 
     // ── recording (capture) ──────────────────────────────────────────
     /// Length of each video segment in seconds.
@@ -113,6 +115,7 @@ pub fn load(path: &Path) -> Result<Config> {
         confidence: get_f64("CONFIDENCE", 0.5),
         species_confidence: get_f64("SPECIES_CONFIDENCE", 0.1),
         max_frames_per_clip: get_u32("MAX_FRAMES_PER_CLIP", 0),
+        motion_threshold: get_f64("MOTION_THRESHOLD", 1.5),
 
         segment_length: get_u32("SEGMENT_LENGTH", 60),
         capture_fps: get_u32("CAPTURE_FPS", 1),

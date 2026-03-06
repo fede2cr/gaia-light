@@ -36,6 +36,12 @@ pub struct RuntimeSettings {
     /// `None` means "use the default from CLASSIFIERS env var / config".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classifiers: Option<Vec<ClassifierKind>>,
+
+    /// Motion-detection threshold (MAD on 0–255 scale).
+    /// Higher values require more inter-frame change to count as motion.
+    /// `None` means "use the default (1.5)".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_threshold: Option<f64>,
 }
 
 /// Canonical filename inside the shared data directory.
@@ -83,6 +89,7 @@ mod tests {
                 ClassifierKind::AI4GAmazonV2,
                 ClassifierKind::SpeciesNet,
             ]),
+            motion_threshold: Some(2.5),
         };
         save(&dir, &s).unwrap();
         let loaded = load(&dir);
@@ -94,6 +101,7 @@ mod tests {
             loaded.classifiers.as_deref(),
             Some(&[ClassifierKind::AI4GAmazonV2, ClassifierKind::SpeciesNet][..]),
         );
+        assert_eq!(loaded.motion_threshold, Some(2.5));
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

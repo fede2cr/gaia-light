@@ -46,7 +46,8 @@ const THUMB_H: u32 = 240;
 ///
 /// 1.5 lets real captures through while still filtering clips that
 /// are genuinely static (pure background, no trigger-worthy event).
-const MOTION_THRESHOLD: f64 = 1.5;
+/// Default motion threshold (MAD on 0–255 scale).
+pub const DEFAULT_MOTION_THRESHOLD: f64 = 1.5;
 
 /// Fraction of pixels that must individually exceed a per-pixel
 /// threshold before the frame pair is flagged as motion.  This is a
@@ -76,11 +77,15 @@ pub struct MotionResult {
 /// `frame_paths` must be sorted in temporal order (as returned by
 /// [`crate::frames::extract_frames`]).
 ///
+/// `threshold` is the MAD value (0–255 scale) above which a frame pair
+/// is considered to contain motion.  Use [`DEFAULT_MOTION_THRESHOLD`]
+/// when no explicit override is configured.
+///
 /// Returns a [`MotionResult`] describing the motion content.
 /// This function is intentionally **infallible** — if a frame cannot
 /// be loaded it is silently skipped (better to err on the side of
 /// running the detector).
-pub fn detect_motion(frame_paths: &[impl AsRef<Path>]) -> MotionResult {
+pub fn detect_motion(frame_paths: &[impl AsRef<Path>], threshold: f64) -> MotionResult {
     let n = frame_paths.len();
 
     // Trivial cases: 0 or 1 frame → always consider active
@@ -116,7 +121,7 @@ pub fn detect_motion(frame_paths: &[impl AsRef<Path>]) -> MotionResult {
                 peak_mad = mad;
             }
 
-            if mad > MOTION_THRESHOLD {
+            if mad > threshold {
                 debug!(
                     "Motion detected between frames {} and {} (MAD={:.2})",
                     i - 1,
@@ -137,7 +142,7 @@ pub fn detect_motion(frame_paths: &[impl AsRef<Path>]) -> MotionResult {
         total_pairs,
         active_pairs,
         peak_mad,
-        MOTION_THRESHOLD,
+        threshold,
         if has_motion { "MOTION" } else { "STATIC" }
     );
 
@@ -204,7 +209,7 @@ mod tests {
     #[test]
     fn test_single_frame_is_active() {
         let paths: Vec<&Path> = vec![Path::new("/nonexistent/frame.jpg")];
-        let result = detect_motion(&paths);
+        let result = detect_motion(&paths, DEFAULT_MOTION_THRESHOLD);
         assert!(result.has_motion);
         assert_eq!(result.total_pairs, 0);
     }
@@ -212,7 +217,7 @@ mod tests {
     #[test]
     fn test_empty_frames_is_active() {
         let paths: Vec<&Path> = vec![];
-        let result = detect_motion(&paths);
+        let result = detect_motion(&paths, DEFAULT_MOTION_THRESHOLD);
         assert!(result.has_motion);
         assert_eq!(result.total_pairs, 0);
     }
