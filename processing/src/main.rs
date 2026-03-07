@@ -18,7 +18,7 @@ mod reporting;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tracing::{debug, error, info, warn};
@@ -146,6 +146,17 @@ async fn main() -> Result<()> {
         discovery_handle.as_ref(),
     );
 
+    // ── Discover capture nodes ───────────────────────────────────
+    let mut capture_urls = capture_client.resolve_capture_urls(
+        discovery_handle.as_ref(),
+    );
+    info!(
+        "Polling {} capture server(s): {:?}",
+        capture_urls.len(),
+        capture_urls
+    );
+    let mut last_discovery = Instant::now();
+
     // ── Main processing loop ─────────────────────────────────────
     let poll_interval = Duration::from_secs(config.poll_interval_secs);
     let mut detector = detector;
@@ -194,13 +205,25 @@ async fn main() -> Result<()> {
             None => classifiers.iter().collect(),
         };
 
+        // ── periodic mDNS re-discovery ───────────────────────────
+        if last_discovery.elapsed() >= client::REDISCOVERY_INTERVAL {
+            let new_urls = capture_client.resolve_capture_urls(
+                discovery_handle.as_ref(),
+            );
+            if new_urls != capture_urls {
+                info!("Capture node list updated: {:?}", new_urls);
+                capture_urls = new_urls;
+            }
+            last_discovery = Instant::now();
+        }
+
         match process_cycle(
             &config,
             &capture_client,
             &db,
             detector.as_ref(),
             &active_classifiers,
-            discovery_handle.as_ref(),
+            &capture_urls,
             effective_confidence,
             effective_species_conf,
             effective_max_frames,
@@ -231,14 +254,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Run one processing cycle: fetch clips, analyse, report.
+/// Run one processing cycle: fetch clips from all capture nodes and
+/// process them in round-robin (up to [`client::BATCH_PER_NODE`] clips
+/// per node per cycle).
 async fn process_cycle(
     config: &Config,
     capture_client: &client::CaptureClient,
     db: &db::Database,
     detector: Option<&model::Detector>,
     classifiers: &[&model::Classifier],
-    discovery: Option<&discovery::DiscoveryHandle>,
+    capture_urls: &[String],
     effective_confidence: f64,
     effective_species_conf: f64,
     effective_max_frames: u32,
@@ -252,39 +277,66 @@ async fn process_cycle(
         }
     };
 
-    // 1. List available clips from capture server
-    let clips = capture_client.list_clips(discovery).await?;
-    if clips.is_empty() {
-        return Ok(0);
-    }
+    let mut total_processed = 0;
 
-    info!("Found {} clip(s) to process", clips.len());
-    let mut processed = 0;
-
-    for clip in &clips {
+    for base_url in capture_urls {
         if SHUTDOWN.load(Ordering::Relaxed) {
             break;
         }
 
-        // Skip clips we have already processed (idempotent)
-        if db.is_clip_processed(&clip.filename) {
-            debug!("Skipping already-processed clip: {}", clip.filename);
-            // Still delete from capture server to free space
-            info!("Requesting capture to delete already-processed clip: {}", clip.filename);
-            let _ = capture_client.delete_clip(&clip.filename, discovery).await;
+        // 1. List available clips from this capture server
+        let clips = match capture_client.list_clips(base_url).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Cannot reach capture server {}: {e:#}", base_url);
+                continue;
+            }
+        };
+        if clips.is_empty() {
             continue;
         }
 
-        let clip_path = config.recs_dir.join(&clip.filename);
+        info!(
+            "[{}] Found {} clip(s) to process",
+            base_url,
+            clips.len()
+        );
 
-        // 2. Download clip
-        if let Err(e) = capture_client
-            .download_clip(&clip.filename, &clip_path, discovery)
-            .await
-        {
-            warn!("Failed to download {}: {e:#}", clip.filename);
-            continue;
-        }
+        let mut batch_count = 0;
+        for clip in &clips {
+            if SHUTDOWN.load(Ordering::Relaxed) {
+                break;
+            }
+
+            // Round-robin: only process a limited batch from each
+            // capture node per cycle so we service all nodes fairly.
+            if batch_count >= client::BATCH_PER_NODE {
+                debug!(
+                    "[{}] Batch limit ({}) reached – rotating to next node",
+                    base_url, client::BATCH_PER_NODE
+                );
+                break;
+            }
+
+            // Skip clips we have already processed (idempotent)
+            if db.is_clip_processed(&clip.filename) {
+                debug!("Skipping already-processed clip: {}", clip.filename);
+                // Still delete from capture server to free space
+                info!("Requesting capture to delete already-processed clip: {}", clip.filename);
+                let _ = capture_client.delete_clip(base_url, &clip.filename).await;
+                continue;
+            }
+
+            let clip_path = config.recs_dir.join(&clip.filename);
+
+            // 2. Download clip
+            if let Err(e) = capture_client
+                .download_clip(base_url, &clip.filename, &clip_path)
+                .await
+            {
+                warn!("Failed to download {}: {e:#}", clip.filename);
+                continue;
+            }
 
         // 3. Extract frames
         let frame_dir = config.recs_dir.join("_frames");
@@ -297,12 +349,29 @@ async fn process_cycle(
         ) {
             Ok(paths) => paths,
             Err(e) => {
-                warn!("Frame extraction failed for {}: {e:#}", clip.filename);
-                // The clip may be truncated (still being written by capture).
-                // Clean up and skip — do NOT delete from capture server so it
-                // can be retried once the file is complete.
+                let err_msg = format!("{e:#}");
+                warn!("Frame extraction failed for {}: {err_msg}", clip.filename);
+
+                // If the file is permanently broken (truncated / no moov
+                // atom), delete it from the capture server so it doesn't
+                // block processing every cycle.
+                let is_corrupt = err_msg.contains("moov atom")
+                    || err_msg.contains("Invalid data found")
+                    || err_msg.contains("could not find codec");
+
                 let _ = std::fs::remove_file(&clip_path);
                 cleanup_frames(&frame_dir);
+
+                if is_corrupt {
+                    warn!(
+                        "Clip {} appears permanently corrupt — deleting from capture server",
+                        clip.filename
+                    );
+                    if let Err(del_err) = capture_client.delete_clip(base_url, &clip.filename).await {
+                        warn!("Failed to delete corrupt clip {} from capture server: {del_err:#}", clip.filename);
+                    }
+                }
+
                 continue;
             }
         };
@@ -373,10 +442,11 @@ async fn process_cycle(
                 cleanup_frames(&frame_dir);
                 let _ = std::fs::remove_file(&clip_path);
                 info!("Requesting capture to delete static clip: {}", clip.filename);
-                if let Err(e) = capture_client.delete_clip(&clip.filename, discovery).await {
+                if let Err(e) = capture_client.delete_clip(base_url, &clip.filename).await {
                     warn!("Failed to delete {} from capture server: {e:#}", clip.filename);
                 }
-                processed += 1;
+                total_processed += 1;
+                batch_count += 1;
                 continue;
             }
             info!(
@@ -586,14 +656,16 @@ async fn process_cycle(
 
         // 8. Tell capture server we're done with this clip
         info!("Requesting capture to delete processed clip: {}", clip.filename);
-        if let Err(e) = capture_client.delete_clip(&clip.filename, discovery).await {
+        if let Err(e) = capture_client.delete_clip(base_url, &clip.filename).await {
             warn!("Failed to delete {} from capture server: {e:#}", clip.filename);
         }
 
-        processed += 1;
+        total_processed += 1;
+        batch_count += 1;
     }
+    } // end for base_url
 
-    Ok(processed)
+    Ok(total_processed)
 }
 
 /// Remove all files from the temporary frame directory.

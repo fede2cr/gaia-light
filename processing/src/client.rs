@@ -1,11 +1,10 @@
 //! HTTP client for the Gaia Light capture server.
 //!
-//! Polls the capture server for available MP4 clips, downloads them
-//! for processing, and deletes them once analysed.  The capture server
-//! URL is discovered via mDNS, falling back to the configured URL.
+//! Polls one or more capture servers for available MP4 clips, downloads
+//! them for processing, and deletes them once analysed.  Capture server
+//! URLs are discovered via mDNS, falling back to the configured URL.
 
 use std::path::Path;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -14,8 +13,16 @@ use tracing::{debug, info, warn};
 use gaia_light_common::discovery::{DiscoveryHandle, ServiceRole};
 use gaia_light_common::protocol::ClipInfo;
 
-/// How long to scan mDNS when looking for a capture peer.
+/// How long to scan mDNS when looking for capture peers.
 const MDNS_BROWSE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Maximum number of clips to process from a single capture node
+/// before moving on to the next.  This ensures fair round-robin
+/// processing when multiple capture nodes are present.
+pub const BATCH_PER_NODE: usize = 3;
+
+/// How often to re-scan mDNS for new/removed capture nodes.
+pub const REDISCOVERY_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Percent-encode a filename for use in a URL path segment.
 /// Encodes everything except unreserved characters (RFC 3986).
@@ -37,8 +44,6 @@ pub struct CaptureClient {
     http: reqwest::Client,
     /// Configured fallback URL (from config file).
     fallback_url: String,
-    /// Cached mDNS-discovered URL (refreshed on failure).
-    discovered_url: Mutex<Option<String>>,
 }
 
 impl CaptureClient {
@@ -49,57 +54,55 @@ impl CaptureClient {
                 .build()
                 .expect("HTTP client"),
             fallback_url: fallback_url.trim_end_matches('/').to_string(),
-            discovered_url: Mutex::new(None),
         }
     }
 
-    /// Resolve the capture server base URL.
+    /// Resolve all capture server base URLs.
     ///
-    /// Tries (in order):
-    /// 1. Cached mDNS-discovered URL
-    /// 2. Fresh mDNS browse for `_gaia-lt-cap._tcp`
-    /// 3. Configured `CAPTURE_SERVER_URL` (fallback)
-    fn base_url(&self, discovery: Option<&DiscoveryHandle>) -> String {
-        // 1. Return cached mDNS URL if available
-        if let Some(url) = self.discovered_url.lock().unwrap().as_ref() {
-            return url.clone();
-        }
-
-        // 2. Try mDNS discovery
+    /// Tries mDNS first (with a retry); falls back to the config value
+    /// when mDNS is unavailable or discovers no capture nodes.
+    pub fn resolve_capture_urls(
+        &self,
+        discovery: Option<&DiscoveryHandle>,
+    ) -> Vec<String> {
         if let Some(handle) = discovery {
-            let peers = handle.discover_peers(ServiceRole::Capture, MDNS_BROWSE_TIMEOUT);
-            if let Some(peer) = peers.first() {
-                if let Some(url) = peer.http_url() {
+            for attempt in 1..=2u8 {
+                let timeout = if attempt == 1 { 5 } else { 3 };
+                let peers = handle.discover_peers(
+                    ServiceRole::Capture,
+                    Duration::from_secs(timeout),
+                );
+                if !peers.is_empty() {
+                    let urls: Vec<String> = peers
+                        .iter()
+                        .filter_map(|p| p.http_url())
+                        .collect();
                     info!(
-                        "Discovered capture server via mDNS: {} at {}",
-                        peer.instance_name, url
+                        "mDNS discovered {} capture node(s): {:?}",
+                        urls.len(),
+                        urls
                     );
-                    *self.discovered_url.lock().unwrap() = Some(url.clone());
-                    return url;
+                    return urls;
+                }
+                if attempt == 1 {
+                    debug!("mDNS scan {attempt}: no peers yet, retrying…");
                 }
             }
-            debug!("No capture peers found via mDNS, using fallback URL");
+            info!(
+                "No capture nodes found via mDNS, falling back to config URL"
+            );
         }
-
-        // 3. Fallback
-        self.fallback_url.clone()
+        vec![self.fallback_url.clone()]
     }
 
-    /// Clear the cached mDNS URL (called on connection failure so we
-    /// re-discover next time).
-    fn invalidate_discovered_url(&self) {
-        *self.discovered_url.lock().unwrap() = None;
-    }
-
-    /// List clips available on the capture server.
-    pub async fn list_clips(&self, discovery: Option<&DiscoveryHandle>) -> Result<Vec<ClipInfo>> {
-        let url = format!("{}/api/clips", self.base_url(discovery));
+    /// List clips available on a specific capture server.
+    pub async fn list_clips(&self, base_url: &str) -> Result<Vec<ClipInfo>> {
+        let url = format!("{base_url}/api/clips");
         debug!("GET {url}");
 
         let resp = match self.http.get(&url).send().await {
             Ok(r) => r,
             Err(e) => {
-                self.invalidate_discovered_url();
                 return Err(e).context("Capture server unreachable");
             }
         };
@@ -120,14 +123,14 @@ impl CaptureClient {
         Ok(clips)
     }
 
-    /// Download a clip from the capture server to a local path.
+    /// Download a clip from a specific capture server to a local path.
     pub async fn download_clip(
         &self,
+        base_url: &str,
         name: &str,
         dest: &Path,
-        discovery: Option<&DiscoveryHandle>,
     ) -> Result<()> {
-        let url = format!("{}/api/clips/{}", self.base_url(discovery), encode_path_segment(name));
+        let url = format!("{base_url}/api/clips/{}", encode_path_segment(name));
         info!("Downloading clip: {name}");
 
         let resp = self
@@ -160,9 +163,9 @@ impl CaptureClient {
         Ok(())
     }
 
-    /// Tell the capture server to delete a clip we have finished processing.
-    pub async fn delete_clip(&self, name: &str, discovery: Option<&DiscoveryHandle>) -> Result<()> {
-        let url = format!("{}/api/clips/{}", self.base_url(discovery), encode_path_segment(name));
+    /// Tell a specific capture server to delete a clip we have finished processing.
+    pub async fn delete_clip(&self, base_url: &str, name: &str) -> Result<()> {
+        let url = format!("{base_url}/api/clips/{}", encode_path_segment(name));
         debug!("DELETE {url}");
 
         let resp = self
