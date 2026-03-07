@@ -62,11 +62,13 @@ pub fn write_live_status(
     class_counts: &[(String, i64)],
     top_species: &[(String, i64)],
     recent_labels: &[String],
+    source_node: &str,
 ) {
     let status = serde_json::json!({
         "last_clip": last_clip,
         "frame_count": frame_count,
         "detections_last_hour": detections_last_hour,
+        "source_node": source_node,
         "class_counts": class_counts.iter()
             .map(|(c, n)| serde_json::json!({"class": c, "count": n}))
             .collect::<Vec<_>>(),

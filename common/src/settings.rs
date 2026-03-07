@@ -42,6 +42,15 @@ pub struct RuntimeSettings {
     /// `None` means "use the default (1.5)".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion_threshold: Option<f64>,
+
+    /// UTC offset in whole hours (e.g. -3 for UTC-3, 2 for UTC+2).
+    /// Used by the web dashboard to display clip timestamps in local time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utc_offset_hours: Option<i32>,
+
+    /// Whether daylight saving time is currently active (adds +1 hour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dst: Option<bool>,
 }
 
 /// Canonical filename inside the shared data directory.
@@ -90,6 +99,8 @@ mod tests {
                 ClassifierKind::SpeciesNet,
             ]),
             motion_threshold: Some(2.5),
+            utc_offset_hours: Some(-3),
+            dst: Some(true),
         };
         save(&dir, &s).unwrap();
         let loaded = load(&dir);
@@ -102,6 +113,8 @@ mod tests {
             Some(&[ClassifierKind::AI4GAmazonV2, ClassifierKind::SpeciesNet][..]),
         );
         assert_eq!(loaded.motion_threshold, Some(2.5));
+        assert_eq!(loaded.utc_offset_hours, Some(-3));
+        assert_eq!(loaded.dst, Some(true));
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

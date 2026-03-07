@@ -120,6 +120,9 @@ pub struct LiveStatus {
     pub frame_count: usize,
     pub detections_last_hour: usize,
     pub updated_at: String,
+    /// The capture node URL this clip was fetched from.
+    #[serde(default)]
+    pub source_node: Option<String>,
 }
 
 // ── System info ──────────────────────────────────────────────────────────────

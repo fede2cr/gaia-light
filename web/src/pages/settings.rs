@@ -25,6 +25,8 @@ pub async fn get_settings() -> Result<SettingsPayload, ServerFnError> {
         classifiers: rt.classifiers.map(|v| {
             v.iter().map(|k| k.slug().to_string()).collect()
         }),
+        utc_offset_hours: rt.utc_offset_hours,
+        dst: rt.dst,
     })
 }
 
@@ -36,6 +38,8 @@ pub async fn save_settings(
     max_frames_per_clip: Option<u32>,
     motion_threshold: Option<f64>,
     classifiers_csv: Option<String>,
+    utc_offset_hours: Option<i32>,
+    dst: Option<bool>,
 ) -> Result<(), ServerFnError> {
     let state = use_context::<crate::app::AppState>()
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
@@ -55,6 +59,8 @@ pub async fn save_settings(
         max_frames_per_clip,
         motion_threshold,
         classifiers,
+        utc_offset_hours,
+        dst,
     };
 
     gaia_light_common::settings::save(&state.data_dir, &rt)
@@ -76,6 +82,10 @@ pub struct SettingsPayload {
     pub motion_threshold: Option<f64>,
     /// Comma-separated classifier slugs (None = use config default).
     pub classifiers: Option<Vec<String>>,
+    /// UTC offset in whole hours.
+    pub utc_offset_hours: Option<i32>,
+    /// Whether DST is active (+1h).
+    pub dst: Option<bool>,
 }
 
 // ── Known classifier slugs for the UI checkbox list ──────────────────────
@@ -92,16 +102,18 @@ const CLASSIFIER_OPTIONS: &[(&str, &str)] = &[
 pub fn Settings() -> impl IntoView {
     let settings = create_resource(|| (), |_| async { get_settings().await });
     let save_action = create_action(
-        move |(conf, sp_conf, poll, max_fr, mt, cls_csv): &(
+        move |(conf, sp_conf, poll, max_fr, mt, cls_csv, tz_off, tz_dst): &(
             Option<f64>,
             Option<f64>,
             Option<u64>,
             Option<u32>,
             Option<f64>,
             Option<String>,
+            Option<i32>,
+            Option<bool>,
         )| {
-            let (c, sc, p, mf, m, csv) = (conf.clone(), sp_conf.clone(), poll.clone(), max_fr.clone(), mt.clone(), cls_csv.clone());
-            async move { save_settings(c, sc, p, mf, m, csv).await }
+            let (c, sc, p, mf, m, csv, off, dst) = (conf.clone(), sp_conf.clone(), poll.clone(), max_fr.clone(), mt.clone(), cls_csv.clone(), tz_off.clone(), tz_dst.clone());
+            async move { save_settings(c, sc, p, mf, m, csv, off, dst).await }
         },
     );
 
@@ -112,6 +124,8 @@ pub fn Settings() -> impl IntoView {
     let (max_frames, set_max_frames) = create_signal(String::new());
     let (motion_thresh, set_motion_thresh) = create_signal(String::new());
     let (selected_cls, set_selected_cls) = create_signal(Vec::<String>::new());
+    let (utc_offset, set_utc_offset) = create_signal(String::from("0"));
+    let (dst_on, set_dst_on) = create_signal(false);
 
     // Populate signals from loaded settings
     create_effect(move |_| {
@@ -125,6 +139,8 @@ pub fn Settings() -> impl IntoView {
                 s.classifiers
                     .unwrap_or_else(|| vec!["ai4g-amazon-v2".into()]),
             );
+            set_utc_offset.set(s.utc_offset_hours.map(|v| format!("{v}")).unwrap_or_else(|| "0".into()));
+            set_dst_on.set(s.dst.unwrap_or(false));
         }
     });
 
@@ -138,7 +154,9 @@ pub fn Settings() -> impl IntoView {
             let v = selected_cls.get();
             if v.is_empty() { None } else { Some(v.join(",")) }
         };
-        save_action.dispatch((conf, sp, poll, mf, mt, cls));
+        let tz: Option<i32> = utc_offset.get().parse().ok();
+        let dst = Some(dst_on.get());
+        save_action.dispatch((conf, sp, poll, mf, mt, cls, tz, dst));
     };
 
     view! {
@@ -258,6 +276,64 @@ pub fn Settings() -> impl IntoView {
                                         </label>
                                     }
                                 }).collect_view()}
+                            </div>
+                        </section>
+
+                        <section class="config-section">
+                            <h2>"Timezone"</h2>
+                            <p class="info">"Set the UTC offset for displaying timestamps in local time."</p>
+
+                            <div class="settings-form">
+                                <div class="form-row">
+                                    <label for="utc_offset">"UTC offset (hours)"</label>
+                                    <select
+                                        id="utc_offset"
+                                        prop:value={move || utc_offset.get()}
+                                        on:change=move |ev| set_utc_offset.set(event_target_value(&ev))
+                                    >
+                                        <option value="-12">"UTC\u{2212}12"</option>
+                                        <option value="-11">"UTC\u{2212}11"</option>
+                                        <option value="-10">"UTC\u{2212}10"</option>
+                                        <option value="-9">"UTC\u{2212}9"</option>
+                                        <option value="-8">"UTC\u{2212}8"</option>
+                                        <option value="-7">"UTC\u{2212}7"</option>
+                                        <option value="-6">"UTC\u{2212}6"</option>
+                                        <option value="-5">"UTC\u{2212}5"</option>
+                                        <option value="-4">"UTC\u{2212}4"</option>
+                                        <option value="-3">"UTC\u{2212}3"</option>
+                                        <option value="-2">"UTC\u{2212}2"</option>
+                                        <option value="-1">"UTC\u{2212}1"</option>
+                                        <option value="0">"UTC\u{00b1}0"</option>
+                                        <option value="1">"UTC+1"</option>
+                                        <option value="2">"UTC+2"</option>
+                                        <option value="3">"UTC+3"</option>
+                                        <option value="4">"UTC+4"</option>
+                                        <option value="5">"UTC+5"</option>
+                                        <option value="6">"UTC+6"</option>
+                                        <option value="7">"UTC+7"</option>
+                                        <option value="8">"UTC+8"</option>
+                                        <option value="9">"UTC+9"</option>
+                                        <option value="10">"UTC+10"</option>
+                                        <option value="11">"UTC+11"</option>
+                                        <option value="12">"UTC+12"</option>
+                                        <option value="13">"UTC+13"</option>
+                                        <option value="14">"UTC+14"</option>
+                                    </select>
+                                </div>
+                                <div class="form-row">
+                                    <label for="dst">"Daylight Saving Time (+1h)"</label>
+                                    <label class="toggle-switch">
+                                        <input
+                                            type="checkbox"
+                                            id="dst"
+                                            prop:checked=move || dst_on.get()
+                                            on:change=move |_| {
+                                                set_dst_on.update(|v| *v = !*v);
+                                            }
+                                        />
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
                             </div>
                         </section>
 
