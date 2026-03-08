@@ -45,6 +45,9 @@ pub struct WebDetection {
     /// Processing instance that produced this detection.
     #[serde(default)]
     pub processing_instance: String,
+    /// URL of the capture node that recorded the source clip.
+    #[serde(default)]
+    pub source_node: String,
 }
 
 impl WebDetection {

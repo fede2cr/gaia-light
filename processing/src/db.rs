@@ -30,6 +30,8 @@ pub struct DetectionRow {
     pub latitude: f64,
     pub longitude: f64,
     pub processing_instance: String,
+    /// URL of the capture node that recorded the clip.
+    pub source_node: String,
 }
 
 /// Lightweight wrapper around a SQLite connection.
@@ -79,6 +81,7 @@ impl Database {
                 latitude            REAL,
                 longitude           REAL,
                 processing_instance TEXT,
+                source_node         TEXT NOT NULL DEFAULT '',
                 created_at          TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -147,6 +150,18 @@ impl Database {
             info!("Migrated: added species_model column to detections");
         }
 
+        // Migration: add source_node column (capture node URL)
+        let has_source_node: bool = conn
+            .prepare("SELECT source_node FROM detections LIMIT 0")
+            .is_ok();
+        if !has_source_node {
+            conn.execute_batch(
+                "ALTER TABLE detections ADD COLUMN source_node TEXT NOT NULL DEFAULT '';",
+            )
+            .context("Cannot add source_node column")?;
+            info!("Migrated: added source_node column to detections");
+        }
+
         info!("Database schema initialised at {}", path.display());
         Ok(Self { conn })
     }
@@ -158,9 +173,9 @@ impl Database {
                 timestamp, clip_filename, frame_index, detector_model,
                 class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                 species, species_confidence, species_model, crop_path,
-                latitude, longitude, processing_instance
+                latitude, longitude, processing_instance, source_node
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                      ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                      ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             rusqlite::params![
                 d.timestamp,
                 d.clip_filename,
@@ -179,6 +194,7 @@ impl Database {
                 d.latitude,
                 d.longitude,
                 d.processing_instance,
+                d.source_node,
             ],
         )?;
 
@@ -291,7 +307,8 @@ impl Database {
             "SELECT timestamp, clip_filename, frame_index, detector_model,
                     class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                     species, species_confidence, species_model, crop_path,
-                    latitude, longitude, processing_instance
+                    latitude, longitude, processing_instance,
+                    COALESCE(source_node, '')
              FROM detections
              ORDER BY created_at DESC
              LIMIT ?1",
@@ -317,6 +334,7 @@ impl Database {
                     latitude: row.get(14)?,
                     longitude: row.get(15)?,
                     processing_instance: row.get(16)?,
+                    source_node: row.get(17)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -376,6 +394,7 @@ mod tests {
             latitude: 42.0,
             longitude: -72.0,
             processing_instance: "test-01".into(),
+            source_node: "http://localhost:8090".into(),
         };
 
         let id = db.insert_detection(&row).unwrap();

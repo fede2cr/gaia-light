@@ -1,10 +1,10 @@
-//! HTTP server exposing captured video clips to the processing server.
+//! HTTP server – exposes the same API as the regular capture node.
 //!
 //! Routes:
 //!   GET    /api/health          → health check
-//!   GET    /api/clips           → list available MP4 files
-//!   GET    /api/clips/:name     → download an MP4 file
-//!   DELETE /api/clips/:name     → remove a processed MP4 file
+//!   GET    /api/clips           → list available MP4 symlinks
+//!   GET    /api/clips/:name     → download (follows symlinks)
+//!   DELETE /api/clips/:name     → move symlink to processed/
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,30 +23,28 @@ use tracing::info;
 
 use gaia_light_common::protocol::{ClipInfo, HealthResponse};
 
-use crate::DiskState;
-
 /// Shared state for route handlers.
 #[derive(Clone)]
 struct AppState {
     stream_dir: PathBuf,
+    processed_dir: PathBuf,
     start_time: Instant,
     #[allow(dead_code)]
     shutdown: Arc<AtomicBool>,
-    disk: Arc<DiskState>,
 }
 
 /// Start the HTTP server. Blocks until shutdown.
 pub async fn run(
     stream_dir: PathBuf,
+    processed_dir: PathBuf,
     listen_addr: &str,
     shutdown: Arc<AtomicBool>,
-    disk: Arc<DiskState>,
 ) -> anyhow::Result<()> {
     let state = AppState {
         stream_dir,
+        processed_dir,
         start_time: Instant::now(),
         shutdown: shutdown.clone(),
-        disk,
     };
 
     let app = Router::new()
@@ -58,7 +56,7 @@ pub async fn run(
         .with_state(state);
 
     let listener = TcpListener::bind(listen_addr).await?;
-    info!("Capture HTTP server listening on {listen_addr}");
+    info!("Video-import HTTP server listening on {listen_addr}");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -77,16 +75,11 @@ pub async fn run(
 // ── Route handlers ───────────────────────────────────────────────────────
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
-    let paused = state.disk.capture_paused.load(Ordering::Relaxed);
     Json(HealthResponse {
-        status: if paused {
-            "disk_full".to_string()
-        } else {
-            "ok".to_string()
-        },
+        status: "ok".to_string(),
         uptime_secs: state.start_time.elapsed().as_secs(),
-        disk_usage_pct: state.disk.usage_pct(),
-        capture_paused: paused,
+        disk_usage_pct: 0.0,
+        capture_paused: false,
     })
 }
 
@@ -103,10 +96,9 @@ async fn list_clips(
     let entries =
         std::fs::read_dir(dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Only include files that are "settled" (not modified recently).
-    // ffmpeg's segment muxer writes the moov atom at the very end, so a
-    // file that was recently modified may still be incomplete.  5 seconds
-    // gives enough margin for slow SD cards.
+    // Skip files whose target was modified in the last 5 seconds —
+    // the NVR may still be writing.  `metadata()` follows symlinks
+    // so we get the underlying file's mtime.
     let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
 
     for entry in entries.flatten() {
@@ -115,9 +107,10 @@ async fn list_clips(
             continue;
         }
         if let Ok(meta) = path.metadata() {
-            let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let modified =
+                meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             if modified > cutoff {
-                // Still being written
+                // Target still being written by the NVR
                 continue;
             }
             if meta.len() == 0 {
@@ -162,6 +155,7 @@ async fn download_clip(
         return Err(StatusCode::NOT_FOUND);
     }
 
+    // `tokio::fs::read` follows symlinks — serves the underlying file.
     let bytes = tokio::fs::read(&file_path)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -172,6 +166,8 @@ async fn download_clip(
     ))
 }
 
+/// Instead of deleting the original recording, move the symlink to
+/// `processed/` so the scanner knows not to re-import it.
 async fn delete_clip(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -180,12 +176,13 @@ async fn delete_clip(
         return StatusCode::BAD_REQUEST;
     }
 
-    let file_path = state.stream_dir.join(&name);
-    if !file_path.exists() {
+    let src = state.stream_dir.join(&name);
+    if !src.exists() {
         return StatusCode::NOT_FOUND;
     }
 
-    match tokio::fs::remove_file(&file_path).await {
+    let dst = state.processed_dir.join(&name);
+    match tokio::fs::rename(&src, &dst).await {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }

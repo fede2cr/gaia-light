@@ -57,6 +57,10 @@ pub struct Config {
     // ── database (processing / web) ──────────────────────────────────
     pub db_path: PathBuf,
 
+    // ── disk guard (capture) ─────────────────────────────────────────
+    /// Maximum allowed disk usage percentage (0–100).  Default: 95.
+    pub disk_usage_max: f64,
+
     // ── network (capture ↔ processing) ───────────────────────────────
     pub capture_listen_addr: String,
     pub capture_server_url: String,
@@ -143,6 +147,8 @@ pub fn load(path: &Path) -> Result<Config> {
         db_path: PathBuf::from(
             get("DB_PATH").unwrap_or_else(|| "/data/detections.db".into()),
         ),
+
+        disk_usage_max: get_f64("DISK_USAGE_MAX", 95.0),
 
         capture_listen_addr: get("CAPTURE_LISTEN_ADDR")
             .unwrap_or_else(|| "0.0.0.0:8090".into()),

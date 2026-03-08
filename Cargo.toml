@@ -1,5 +1,5 @@
 [workspace]
-members = ["common", "capture", "processing", "web"]
+members = ["common", "capture", "processing", "web", "video-import"]
 resolver = "2"
 
 [workspace.package]

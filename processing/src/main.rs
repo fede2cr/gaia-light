@@ -579,6 +579,7 @@ async fn process_cycle(
                             processing_instance: config
                                 .processing_instance
                                 .clone(),
+                            source_node: base_url.to_string(),
                         };
 
                         // Insert into DB
@@ -721,6 +722,7 @@ fn check_models(args: &[String]) -> Result<()> {
         classifiers: vec![],  // populated dynamically below
         processing_instance: "smoke-test".into(),
         db_path: PathBuf::from("/tmp/smoke-test.db"),
+        disk_usage_max: 95.0,
         capture_listen_addr: "0.0.0.0:8090".into(),
         capture_server_url: "http://localhost:8090".into(),
         poll_interval_secs: 5,

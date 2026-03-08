@@ -40,7 +40,7 @@ pub fn recent_detections(
                         bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                         species, species_confidence, species_model, crop_path,
                         latitude, longitude, processing_instance,
-                        created_at
+                        created_at, COALESCE(source_node, '')
                  FROM detections
                  WHERE id > ?1
                  ORDER BY id DESC
@@ -54,7 +54,7 @@ pub fn recent_detections(
                         bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                         species, species_confidence, species_model, crop_path,
                         latitude, longitude, processing_instance,
-                        created_at
+                        created_at, COALESCE(source_node, '')
                  FROM detections
                  ORDER BY id DESC
                  LIMIT ?1"
@@ -87,6 +87,7 @@ pub fn recent_detections(
                 longitude: row.get(16)?,
                 processing_instance: row.get(17)?,
                 created_at: row.get(18)?,
+                source_node: row.get(19)?,
             })
         },
     )?;
