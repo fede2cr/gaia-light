@@ -23,57 +23,40 @@ fn node_label(url: &str) -> String {
         .to_string()
 }
 
-/// Parse an ISO-8601 / RFC-3339 timestamp, apply a UTC offset (hours)
-/// and optional DST (+1h), and return a human-readable local time string.
+/// Format a capture timestamp into a compact 12-hour string with TZ label.
 ///
-/// Does simple arithmetic without pulling in chrono for the WASM bundle.
-fn format_local_time(iso: &str, offset_hours: i32, dst: bool) -> String {
-    // Expect "YYYY-MM-DDTHH:MM:SS…" (at least 19 chars)
-    if iso.len() < 19 {
-        return iso.to_string();
+/// `"2026-03-07T16:21:37"` with offset -6 and dst false → `"10:21am (UTC-6)"`
+///
+/// Pure arithmetic — no chrono dependency (WASM-safe).
+fn format_capture_time(iso: &str, offset_hours: i32, dst: bool) -> String {
+    if iso.len() < 16 {
+        return String::new();
     }
     let parse = || -> Option<String> {
-        let year: i32  = iso[0..4].parse().ok()?;
-        let mon: u32   = iso[5..7].parse().ok()?;
-        let day: u32   = iso[8..10].parse().ok()?;
-        let hour: i32  = iso[11..13].parse().ok()?;
-        let min: u32   = iso[14..16].parse().ok()?;
-        let sec: u32   = iso[17..19].parse().ok()?;
+        let hour: i32 = iso[11..13].parse().ok()?;
+        let min: u32 = iso[14..16].parse().ok()?;
 
         let total_offset = offset_hours + if dst { 1 } else { 0 };
         let mut h = hour + total_offset;
-        let mut d = day as i32;
-        let mut m = mon;
-        let mut y = year;
+        if h >= 24 { h -= 24; }
+        if h < 0 { h += 24; }
 
-        // Normalise hour overflow / underflow into day shift
-        if h >= 24 { h -= 24; d += 1; }
-        if h < 0   { h += 24; d -= 1; }
-
-        let days_in_month = |mm: u32, yy: i32| -> u32 {
-            match mm {
-                1|3|5|7|8|10|12 => 31,
-                4|6|9|11 => 30,
-                2 => if yy % 4 == 0 && (yy % 100 != 0 || yy % 400 == 0) { 29 } else { 28 },
-                _ => 30,
-            }
+        let (h12, ampm) = match h {
+            0 => (12, "am"),
+            1..=11 => (h, "am"),
+            12 => (12, "pm"),
+            _ => (h - 12, "pm"),
         };
-        if d < 1 {
-            m = if m == 1 { 12 } else { m - 1 };
-            if m == 12 && mon == 1 { y -= 1; }
-            d = days_in_month(m, y) as i32;
-        } else if d > days_in_month(m, y) as i32 {
-            d = 1;
-            m += 1;
-            if m > 12 { m = 1; y += 1; }
-        }
 
-        Some(format!(
-            "{y:04}-{m:02}-{:02} {:02}:{min:02}:{sec:02}",
-            d, h
-        ))
+        let tz_label = if total_offset >= 0 {
+            format!("UTC+{total_offset}")
+        } else {
+            format!("UTC{total_offset}")
+        };
+
+        Some(format!("{h12}:{min:02}{ampm} ({tz_label})"))
     };
-    parse().unwrap_or_else(|| iso.to_string())
+    parse().unwrap_or_default()
 }
 
 // ── Server functions ─────────────────────────────────────────────────────────
@@ -230,19 +213,23 @@ pub fn Home() -> impl IntoView {
                                 .as_deref()
                                 .map(|u| node_label(u))
                                 .unwrap_or_else(|| "unknown".into());
-                            let local_time = format_local_time(
-                                &status.updated_at, tz_data.0, tz_data.1
-                            );
+                            let cap_time = status.captured_at
+                                .as_deref()
+                                .map(|ts| format_capture_time(ts, tz_data.0, tz_data.1))
+                                .unwrap_or_default();
+
                             view! {
                                 <div class="live-indicator">
                                     <span class="live-dot"></span>
-                                    " Capture: "
+                                    " Now processing from "
                                     <strong>{node}</strong>
-                                    " | "
-                                    {status.last_clip}
-                                    " | "
+                                    {if !cap_time.is_empty() {
+                                        view! { <span>", captured at " {cap_time}</span> }.into_view()
+                                    } else {
+                                        view! {}.into_view()
+                                    }}
+                                    " \u{2014} "
                                     {status.detections_last_hour.to_string()} " det/h"
-                                    " | " {local_time}
                                 </div>
                             }.into_view()
                         }

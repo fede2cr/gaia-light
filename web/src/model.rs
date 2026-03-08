@@ -123,6 +123,9 @@ pub struct LiveStatus {
     /// The capture node URL this clip was fetched from.
     #[serde(default)]
     pub source_node: Option<String>,
+    /// ISO-8601 capture timestamp from the clip metadata.
+    #[serde(default)]
+    pub captured_at: Option<String>,
 }
 
 // ── System info ──────────────────────────────────────────────────────────────

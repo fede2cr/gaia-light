@@ -641,6 +641,7 @@ async fn process_cycle(
             &top_species,
             &recent_labels,
             base_url,
+            &clip.created,
         );
 
         // 6. Mark clip as processed in DB (idempotent guard)
