@@ -58,6 +58,10 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    if std::env::var("RUST_LOG").map_or(false, |v| v.contains("debug")) {
+        info!("🔍 Debug logging ENABLED (RUST_LOG={})", std::env::var("RUST_LOG").unwrap_or_default());
+    }
+
     // ── load configuration ───────────────────────────────────────────
     let import_dir = PathBuf::from(env_required("IMPORT_DIR")?);
     let camera_name = env_required("CAMERA_NAME")?;

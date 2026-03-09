@@ -37,6 +37,10 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    if std::env::var("RUST_LOG").map_or(false, |v| v.contains("debug")) {
+        info!("🔍 Debug logging ENABLED (RUST_LOG={})", std::env::var("RUST_LOG").unwrap_or_default());
+    }
+
     // ── Check for --check-models (build-time smoke test) ─────────
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--check-models") {
