@@ -19,14 +19,16 @@ COPY common/Cargo.toml common/Cargo.toml
 COPY capture/Cargo.toml capture/Cargo.toml
 COPY processing/Cargo.toml processing/Cargo.toml
 COPY web/Cargo.toml web/Cargo.toml
+COPY video-import/Cargo.toml video-import/Cargo.toml
 
 # Create dummy sources so cargo can fetch/compile dependencies
-RUN mkdir -p common/src capture/src processing/src web/src && \
+RUN mkdir -p common/src capture/src processing/src web/src video-import/src && \
     echo "pub fn _dummy() {}" > common/src/lib.rs && \
     echo "fn main() {}" > capture/src/main.rs && \
     echo "fn main() {}" > processing/src/main.rs && \
     echo "pub fn _dummy() {}" > web/src/lib.rs && \
     echo "fn main() {}" > web/src/main.rs && \
+    echo "fn main() {}" > video-import/src/main.rs && \
     cargo build --release -p gaia-light-capture 2>/dev/null || true
 
 # Copy real source (touch to invalidate cargo fingerprint from dummy layer)

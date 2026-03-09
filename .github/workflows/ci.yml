@@ -58,6 +58,19 @@ jobs:
             arch: arm64
             platform: linux/arm64
             runner: ubuntu-24.04-arm
+          # video-import
+          - image: video-import
+            context: .
+            file: video-import/Containerfile
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - image: video-import
+            context: .
+            file: video-import/Containerfile
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -119,7 +132,7 @@ jobs:
     needs: build
     strategy:
       matrix:
-        image: [capture, processing, web]
+        image: [capture, processing, web, video-import]
     permissions:
       contents: read
 
