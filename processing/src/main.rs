@@ -329,6 +329,9 @@ async fn process_cycle(
 
             let clip_path = config.recs_dir.join(&clip.filename);
 
+            // Track overall clip processing time
+            let clip_start = Instant::now();
+
             // 2. Download clip
             if let Err(e) = capture_client
                 .download_clip(base_url, &clip.filename, &clip_path)
@@ -342,12 +345,21 @@ async fn process_cycle(
         let frame_dir = config.recs_dir.join("_frames");
         std::fs::create_dir_all(&frame_dir)?;
 
+        let extract_start = Instant::now();
         let frame_paths = match frames::extract_frames(
             &clip_path,
             config.capture_fps.max(1),
             &frame_dir,
         ) {
-            Ok(paths) => paths,
+            Ok(paths) => {
+                debug!(
+                    "Frame extraction for {} took {:.1}s ({} frames)",
+                    clip.filename,
+                    extract_start.elapsed().as_secs_f64(),
+                    paths.len()
+                );
+                paths
+            }
             Err(e) => {
                 warn!("Frame extraction failed for {}: {e:#}", clip.filename);
 
@@ -425,6 +437,10 @@ async fn process_cycle(
         if !first_frame_has_detections {
             let motion = motion::detect_motion(&frame_paths, effective_motion_threshold);
             if !motion.has_motion {
+                debug!(
+                    "Motion check for {}: peak_mad={:.4}, threshold={:.2} → static",
+                    clip.filename, motion.peak_mad, effective_motion_threshold
+                );
                 info!(
                     "Skipping {} — no first-frame detections and no motion (peak MAD={:.2})",
                     clip.filename, motion.peak_mad
@@ -460,6 +476,7 @@ async fn process_cycle(
                 break;
             }
 
+            let frame_start = Instant::now();
             info!(
                 "[{}/{}] Analysing frame {} of {}",
                 clip.filename,
@@ -472,6 +489,13 @@ async fn process_cycle(
                 Ok(img) => {
                     let detections =
                         detector.detect(&img, effective_confidence);
+
+                    debug!(
+                        "[{}/frame {}] Detection took {:.1}ms",
+                        clip.filename,
+                        frame_idx,
+                        frame_start.elapsed().as_secs_f64() * 1000.0
+                    );
 
                     if detections.is_empty() {
                         info!(
@@ -508,7 +532,15 @@ async fn process_cycle(
 
                         let mut best_species: Option<model::Classification> = None;
                         for cls in classifiers {
+                            let cls_start = Instant::now();
                             if let Some(result) = cls.classify(&crop, effective_species_conf) {
+                                debug!(
+                                    "  → [{}] classified in {:.0}ms: {} ({:.1}%)",
+                                    cls.kind.slug(),
+                                    cls_start.elapsed().as_secs_f64() * 1000.0,
+                                    result.label,
+                                    result.confidence * 100.0,
+                                );
                                 info!(
                                     "  → [{}] Species: {} ({:.1}%)",
                                     cls.kind.slug(),
@@ -604,10 +636,11 @@ async fn process_cycle(
         }
 
         info!(
-            "Clip {} complete: {} frame(s) analysed, {} detection(s) total",
+            "Clip {} complete: {} frame(s) analysed, {} detection(s) total (took {:.1}s)",
             clip.filename,
             frame_paths.len(),
-            clip_det_count
+            clip_det_count,
+            clip_start.elapsed().as_secs_f64()
         );
 
         // 5. Update live status with class breakdown, top species, and recent labels
@@ -644,6 +677,11 @@ async fn process_cycle(
             db.mark_clip_processed(&clip.filename, frame_paths.len(), det_count)
         {
             warn!("Cannot mark clip processed: {e:#}");
+        } else {
+            debug!(
+                "Marked clip {} as processed ({} frames, {} detections)",
+                clip.filename, frame_paths.len(), det_count
+            );
         }
 
         // 7. Clean up frames + source clip

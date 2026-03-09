@@ -133,6 +133,7 @@ impl CaptureClient {
         let url = format!("{base_url}/api/clips/{}", encode_path_segment(name));
         info!("Downloading clip: {name}");
 
+        let t0 = std::time::Instant::now();
         let resp = self
             .http
             .get(&url)
@@ -155,6 +156,17 @@ impl CaptureClient {
                 format!("Cannot write clip to {}", dest.display())
             })?;
 
+        let elapsed = t0.elapsed();
+        let size_mb = bytes.len() as f64 / 1_048_576.0;
+        let rate = if elapsed.as_secs_f64() > 0.0 {
+            size_mb / elapsed.as_secs_f64()
+        } else {
+            0.0
+        };
+        debug!(
+            "Downloaded {} ({:.2} MB in {:.1}s, {:.1} MB/s)",
+            name, size_mb, elapsed.as_secs_f64(), rate
+        );
         info!(
             "Downloaded {} ({} bytes)",
             name,
@@ -175,7 +187,12 @@ impl CaptureClient {
             .await
             .context("Delete request failed")?;
 
-        if !resp.status().is_success() {
+        if resp.status().is_success() {
+            debug!(
+                "DELETE {name} from capture server → {} (removed)",
+                resp.status()
+            );
+        } else {
             warn!(
                 "Capture server returned {} for DELETE /api/clips/{name}",
                 resp.status()

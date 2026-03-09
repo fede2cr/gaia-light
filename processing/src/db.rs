@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
-use tracing::info;
+use tracing::{debug, info};
 
 /// A single detection to insert into the database.
 #[derive(Debug, Clone)]
@@ -198,6 +198,17 @@ impl Database {
             ],
         )?;
 
+        debug!(
+            "Inserted detection id={}: {} {} ({:.1}%) species={:?} in {}/{}",
+            id,
+            d.class,
+            d.detector_model,
+            d.confidence * 100.0,
+            d.species,
+            d.clip_filename,
+            d.frame_index
+        );
+
         // Update daily summary
         let date = if d.timestamp.len() >= 10 {
             &d.timestamp[..10]
@@ -264,19 +275,27 @@ impl Database {
              (filename, frame_count, detection_count) VALUES (?1, ?2, ?3)",
             rusqlite::params![filename, frame_count as i64, detection_count as i64],
         )?;
+        debug!(
+            "mark_clip_processed: {} ({} frames, {} detections)",
+            filename, frame_count, detection_count
+        );
         Ok(())
     }
 
     /// Check if a clip has already been processed.
     pub fn is_clip_processed(&self, filename: &str) -> bool {
-        self.conn
+        let result = self.conn
             .prepare_cached(
                 "SELECT 1 FROM processed_clips WHERE filename = ?1",
             )
             .and_then(|mut stmt| {
                 stmt.query_row(rusqlite::params![filename], |_| Ok(true))
             })
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if result {
+            debug!("is_clip_processed({filename}): already processed");
+        }
+        result
     }
 
     /// Count detections within the last `seconds` seconds.
