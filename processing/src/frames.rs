@@ -10,58 +10,16 @@ use anyhow::{Context, Result};
 use image::{DynamicImage, GenericImageView, RgbImage};
 use tracing::debug;
 
-/// Quick check that an MP4 file is a valid, seekable container.
-///
-/// ffmpeg's segment muxer writes the moov atom last.  If the file is
-/// truncated (still being written, or I/O error) the atom is missing
-/// and ffmpeg will fail with "moov atom not found".
-///
-/// Security-camera recordings (fragmented MP4, moov-at-start, etc.)
-/// may not have a moov atom in the last 64 KB, so we fall back to
-/// `ffprobe` to determine whether the file is actually playable.
-fn is_valid_mp4(path: &Path) -> bool {
-    // Fast path: scan the last 64 KB for a standard moov atom.
-    if has_moov_tail(path) {
-        return true;
-    }
-
-    // Slow path: ask ffprobe — handles fragmented MP4, moov-at-start,
-    // and other container variations produced by NVRs / security cameras.
-    let Ok(output) = Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", "format=duration"])
-        .arg(path.as_os_str())
-        .output()
-    else {
-        return false;
-    };
-    output.status.success()
-}
-
-/// Scan the last 64 KB of a file for the ASCII bytes `moov`.
-fn has_moov_tail(path: &Path) -> bool {
-    let Ok(data) = std::fs::read(path) else {
-        return false;
-    };
-    let search_start = data.len().saturating_sub(64 * 1024);
-    data[search_start..]
-        .windows(4)
-        .any(|w| w == b"moov")
-}
-
 /// Extract JPEG frames from a video clip using ffmpeg.
 ///
 /// Returns the paths to the extracted frame images, sorted by name.
+/// Returns an empty `Vec` (not an error) when ffmpeg produces no
+/// frames — the caller decides whether to skip or retry.
 pub fn extract_frames(
     clip_path: &Path,
     fps: u32,
     output_dir: &Path,
 ) -> Result<Vec<PathBuf>> {
-    if !is_valid_mp4(clip_path) {
-        anyhow::bail!(
-            "MP4 file has no moov atom (truncated / still being written): {}",
-            clip_path.display()
-        );
-    }
     // Clean any previous frames in the output dir
     if output_dir.exists() {
         for entry in std::fs::read_dir(output_dir)?.flatten() {

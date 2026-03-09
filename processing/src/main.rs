@@ -349,28 +349,21 @@ async fn process_cycle(
         ) {
             Ok(paths) => paths,
             Err(e) => {
-                let err_msg = format!("{e:#}");
-                warn!("Frame extraction failed for {}: {err_msg}", clip.filename);
-
-                // If the file is permanently broken (truncated / no moov
-                // atom), delete it from the capture server so it doesn't
-                // block processing every cycle.
-                let is_corrupt = err_msg.contains("moov atom")
-                    || err_msg.contains("Invalid data found")
-                    || err_msg.contains("could not find codec");
+                warn!("Frame extraction failed for {}: {e:#}", clip.filename);
 
                 let _ = std::fs::remove_file(&clip_path);
                 cleanup_frames(&frame_dir);
 
-                if is_corrupt {
-                    warn!(
-                        "Clip {} appears permanently corrupt — deleting from capture server",
-                        clip.filename
-                    );
-                    if let Err(del_err) = capture_client.delete_clip(base_url, &clip.filename).await {
-                        warn!("Failed to delete corrupt clip {} from capture server: {del_err:#}", clip.filename);
-                    }
-                }
+                // Mark the clip as processed locally so we don't
+                // re-download it every cycle, but do NOT delete it
+                // from the capture server — the file may be valid
+                // under a different ffmpeg version or container
+                // variant (e.g. fragmented MP4 from an NVR).
+                warn!(
+                    "Skipping {} — will not retry until processed_clips is reset",
+                    clip.filename
+                );
+                db.mark_clip_processed(&clip.filename, 0, 0)?;
 
                 continue;
             }
