@@ -1,10 +1,12 @@
 //! HTTP server exposing captured video clips to the processing server.
 //!
 //! Routes:
-//!   GET    /api/health          → health check
-//!   GET    /api/clips           → list available MP4 files
-//!   GET    /api/clips/:name     → download an MP4 file
-//!   DELETE /api/clips/:name     → remove a processed MP4 file
+//!   GET    /api/health              → health check
+//!   GET    /api/clips               → list available MP4 files
+//!   GET    /api/clips/:name         → download an MP4 file
+//!   DELETE /api/clips/:name         → remove a processed MP4 file
+//!   GET    /api/camera              → camera brightness / low-light status
+//!   POST   /api/camera/low-light    → enable / disable low-light compensation
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,8 +23,9 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tracing::{debug, info};
 
-use gaia_light_common::protocol::{ClipInfo, HealthResponse};
+use gaia_light_common::protocol::{CameraControlRequest, CameraStatus, ClipInfo, HealthResponse};
 
+use crate::brightness::{self, BrightnessState, CameraKind};
 use crate::DiskState;
 
 /// Shared state for route handlers.
@@ -33,6 +36,15 @@ struct AppState {
     #[allow(dead_code)]
     shutdown: Arc<AtomicBool>,
     disk: Arc<DiskState>,
+    /// Camera brightness probe state (None when probe is disabled or
+    /// there is no V4L2 device).
+    brightness: Option<Arc<BrightnessState>>,
+    /// V4L2 device path (needed for control endpoints).
+    video_device: Option<String>,
+    /// Detected camera kind.
+    camera_kind: Option<CameraKind>,
+    /// Brightness threshold currently in use.
+    brightness_threshold: f64,
 }
 
 /// Start the HTTP server. Blocks until shutdown.
@@ -41,12 +53,20 @@ pub async fn run(
     listen_addr: &str,
     shutdown: Arc<AtomicBool>,
     disk: Arc<DiskState>,
+    brightness: Option<Arc<BrightnessState>>,
+    video_device: Option<String>,
+    camera_kind: Option<CameraKind>,
+    brightness_threshold: f64,
 ) -> anyhow::Result<()> {
     let state = AppState {
         stream_dir,
         start_time: Instant::now(),
         shutdown: shutdown.clone(),
         disk,
+        brightness,
+        video_device,
+        camera_kind,
+        brightness_threshold,
     };
 
     let app = Router::new()
@@ -54,6 +74,8 @@ pub async fn run(
         .route("/api/clips", get(list_clips))
         .route("/api/clips/:name", get(download_clip))
         .route("/api/clips/:name", delete(delete_clip))
+        .route("/api/camera", get(camera_status))
+        .route("/api/camera/low-light", axum::routing::post(camera_low_light))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -226,5 +248,55 @@ async fn delete_clip(
             debug!(file = %name, error = %e, "DELETE failed: could not remove file");
             StatusCode::INTERNAL_SERVER_ERROR
         }
+    }
+}
+
+// ── Camera endpoints ─────────────────────────────────────────────────
+
+async fn camera_status(
+    State(state): State<AppState>,
+) -> Result<Json<CameraStatus>, StatusCode> {
+    let bs = state.brightness.as_ref().ok_or(StatusCode::NOT_FOUND)?;
+    let device = state.video_device.as_deref().unwrap_or("unknown");
+    let kind = state.camera_kind.as_ref();
+
+    Ok(Json(CameraStatus {
+        camera_name: kind
+            .map(|k| k.display_name().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        device: device.to_string(),
+        mean_luma: bs.mean_luma(),
+        threshold: state.brightness_threshold,
+        is_dark: bs.is_dark.load(Ordering::Relaxed),
+        low_light_active: bs.low_light_active.load(Ordering::Relaxed),
+    }))
+}
+
+async fn camera_low_light(
+    State(state): State<AppState>,
+    Json(req): Json<CameraControlRequest>,
+) -> StatusCode {
+    let device = match state.video_device.as_deref() {
+        Some(d) => d,
+        None => return StatusCode::NOT_FOUND,
+    };
+    let kind = match state.camera_kind.as_ref() {
+        Some(k) => k,
+        None => return StatusCode::NOT_FOUND,
+    };
+
+    info!(
+        "Camera low-light control request: enable={}, camera={}",
+        req.enable,
+        kind.display_name()
+    );
+
+    if brightness::apply_low_light(device, kind, req.enable) {
+        if let Some(bs) = &state.brightness {
+            bs.low_light_active.store(req.enable, Ordering::Relaxed);
+        }
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
     }
 }

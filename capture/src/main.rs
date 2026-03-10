@@ -11,6 +11,7 @@
 //! 5. Runs an axum HTTP server that exposes the clips to the
 //!    processing server over the network.
 
+mod brightness;
 mod capture;
 mod disk;
 mod server;
@@ -144,23 +145,85 @@ async fn main() -> Result<()> {
     // ── shared disk-guard state ──────────────────────────────────────
     let disk_state = Arc::new(DiskState::new());
 
+    // ── shared shutdown flag for background threads ────────────────
+    let capture_shutdown = Arc::new(AtomicBool::new(false));
+
+    // ── brightness probe ─────────────────────────────────────────────
+    let brightness_state: Option<Arc<brightness::BrightnessState>>;
+    let camera_kind: Option<brightness::CameraKind>;
+    let mut brightness_thread: Option<std::thread::JoinHandle<()>> = None;
+
+    if config.brightness_probe_interval > 0 {
+        if let Some(ref dev) = config.video_device {
+            let kind = brightness::identify_camera(dev);
+            info!(
+                "Camera identified as \"{}\" on {}",
+                kind.display_name(),
+                dev
+            );
+
+            let bs = Arc::new(brightness::BrightnessState::new());
+            brightness_state = Some(bs.clone());
+            camera_kind = Some(kind.clone());
+
+            let probe_dev = dev.clone();
+            let probe_dir = config.stream_data_dir();
+            let probe_threshold = config.brightness_threshold;
+            let probe_interval = config.brightness_probe_interval;
+            let probe_shutdown = capture_shutdown.clone();
+
+            brightness_thread = std::thread::Builder::new()
+                .name("brightness-probe".into())
+                .spawn(move || {
+                    brightness::probe_loop(
+                        probe_dev,
+                        probe_dir,
+                        probe_threshold,
+                        probe_interval,
+                        kind,
+                        bs,
+                        probe_shutdown,
+                    );
+                })
+                .ok();
+        } else {
+            info!("Brightness probe disabled: no V4L2 device configured");
+            brightness_state = None;
+            camera_kind = None;
+        }
+    } else {
+        info!("Brightness probe disabled (BRIGHTNESS_PROBE_INTERVAL=0)");
+        brightness_state = None;
+        camera_kind = None;
+    }
+
     // ── start HTTP server ────────────────────────────────────────────
     let stream_dir = config.stream_data_dir();
     let listen_addr = config.capture_listen_addr.clone();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
     let disk_state_server = disk_state.clone();
+    let server_video_device = config.video_device.clone();
+    let server_brightness_threshold = config.brightness_threshold;
 
     let server_handle = tokio::spawn(async move {
         if let Err(e) =
-            server::run(stream_dir, &listen_addr, shutdown_clone, disk_state_server).await
+            server::run(
+                stream_dir,
+                &listen_addr,
+                shutdown_clone,
+                disk_state_server,
+                brightness_state,
+                server_video_device,
+                camera_kind,
+                server_brightness_threshold,
+            ).await
         {
             tracing::error!("HTTP server error: {e:#}");
         }
     });
 
     // ── periodic capture health check + disk guard ───────────────────
-    let capture_shutdown = Arc::new(AtomicBool::new(false));
     let capture_shutdown_clone = capture_shutdown.clone();
     let disk_state_health = disk_state.clone();
     let guard_dir = config.stream_data_dir();
@@ -236,6 +299,9 @@ async fn main() -> Result<()> {
     // Clean up
     capture_shutdown.store(true, Ordering::Relaxed);
     if let Some(t) = health_thread {
+        t.join().ok();
+    }
+    if let Some(t) = brightness_thread {
         t.join().ok();
     }
     if let Some(dh) = discovery {

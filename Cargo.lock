@@ -1069,6 +1069,7 @@ dependencies = [
  "chrono",
  "ctrlc",
  "gaia-light-common",
+ "image",
  "serde",
  "serde_json",
  "tokio",

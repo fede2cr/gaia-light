@@ -61,6 +61,12 @@ pub struct Config {
     /// Maximum allowed disk usage percentage (0–100).  Default: 95.
     pub disk_usage_max: f64,
 
+    // ── brightness probe (capture) ───────────────────────────────────
+    /// Mean luma (0–255) below which a frame is considered too dark.
+    pub brightness_threshold: f64,
+    /// Seconds between brightness probe captures.  0 = disabled.
+    pub brightness_probe_interval: u64,
+
     // ── network (capture ↔ processing) ───────────────────────────────
     pub capture_listen_addr: String,
     pub capture_server_url: String,
@@ -149,6 +155,11 @@ pub fn load(path: &Path) -> Result<Config> {
         ),
 
         disk_usage_max: get_f64("DISK_USAGE_MAX", 95.0),
+
+        brightness_threshold: get_f64("BRIGHTNESS_THRESHOLD", 20.0),
+        brightness_probe_interval: get("BRIGHTNESS_PROBE_INTERVAL")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60),
 
         capture_listen_addr: get("CAPTURE_LISTEN_ADDR")
             .unwrap_or_else(|| "0.0.0.0:8090".into()),
