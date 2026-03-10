@@ -1,7 +1,15 @@
 //! Shared data-transfer objects used by both server and client.
 
 use serde::{Deserialize, Serialize};
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Return the `NODE_NAME` env var if set, otherwise `"local"`.
+fn node_name_or_local() -> String {
+    std::env::var("NODE_NAME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "local".into())
+}
 // ── Detection ────────────────────────────────────────────────────────────────
 
 /// A single camera-trap detection, serialisable for transfer via server functions.
@@ -84,6 +92,25 @@ impl WebDetection {
             Some(sp) if !sp.is_empty() => sp.clone(),
             _ => self.class.clone(),
         }
+    }
+
+    /// Human-friendly label for the capture node.
+    ///
+    /// Uses `NODE_NAME` env var for local sources, otherwise strips
+    /// the URL to just the hostname.
+    pub fn source_label(&self) -> String {
+        if self.source_node.is_empty() {
+            return node_name_or_local();
+        }
+        let stripped = self.source_node
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .trim_end_matches('/');
+        let host = stripped.split(':').next().unwrap_or(stripped);
+        if host == "localhost" || host.starts_with("127.") {
+            return node_name_or_local();
+        }
+        host.trim_end_matches('.').to_string()
     }
 }
 

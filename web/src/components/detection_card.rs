@@ -12,14 +12,16 @@ pub fn DetectionCard(detection: WebDetection) -> impl IntoView {
     let label = detection.label();
     let crop_url = detection.crop_url();
     let class_badge = detection.class.clone();
+    let source_label = detection.source_label();
 
     // Pick the best available timestamp
-    let timestamp = if !detection.created_at.is_empty() {
-        // Format: "2026-03-05 19:08:27" (strip seconds for cleaner display)
+    let timestamp = if !detection.timestamp.is_empty() {
+        // Clip capture time: "2026-03-05T19:08:27" → "2026-03-05 19:08"
+        let ts = detection.timestamp.replace('T', " ");
+        if ts.len() >= 16 { ts[..16].to_string() } else { ts }
+    } else if !detection.created_at.is_empty() {
         let ts = &detection.created_at;
         if ts.len() >= 16 { ts[..16].to_string() } else { ts.clone() }
-    } else if !detection.timestamp.is_empty() {
-        detection.timestamp.clone()
     } else {
         String::new()
     };
@@ -92,6 +94,7 @@ pub fn DetectionCard(detection: WebDetection) -> impl IntoView {
 
                 <div class="detection-meta">
                     <time>{timestamp}</time>
+                    <span class="source-badge" title="Capture node">{source_label}</span>
                     <span class="clip-ref">{clip_short} ":" {detection.frame_index.to_string()}</span>
                 </div>
             </div>
