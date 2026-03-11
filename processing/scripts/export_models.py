@@ -324,12 +324,22 @@ def export_ai4g_amazon_v2(output_dir: str) -> None:
     inner_model.eval()
 
     # -- 3. Extract or build labels -----------------------------------------
-    if hasattr(pw_model, "class_names"):
-        labels_list = list(pw_model.class_names.values()) if isinstance(pw_model.class_names, dict) else list(pw_model.class_names)
-    elif hasattr(pw_model, "classes"):
-        labels_list = list(pw_model.classes)
-    else:
-        # Infer from model output size
+    # PytorchWildlife uses CLASS_NAMES (uppercase class constant) – a dict
+    # mapping integer indices to genus/species strings.
+    labels_list = None
+    for attr in ("CLASS_NAMES", "class_names", "classes"):
+        obj = getattr(pw_model, attr, None) or getattr(type(pw_model), attr, None)
+        if obj is not None:
+            if isinstance(obj, dict):
+                # Ensure order matches integer keys 0..N-1
+                labels_list = [obj[i] for i in range(len(obj))]
+            else:
+                labels_list = list(obj)
+            print(f"  Found labels via '{attr}' ({len(labels_list)} classes)")
+            break
+
+    if labels_list is None:
+        # Last resort: infer count from model output
         dummy_out = inner_model(torch.zeros(1, 3, 224, 224))
         n_classes = dummy_out.shape[-1]
         labels_list = [f"class_{i}" for i in range(n_classes)]

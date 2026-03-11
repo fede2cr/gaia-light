@@ -156,8 +156,35 @@ pub fn Home() -> impl IntoView {
         create_resource(|| (), |_| async { get_recent_detections(50, None).await });
     let sys_info =
         create_resource(|| (), |_| async { get_system_info().await });
-    let live =
-        create_resource(|| (), |_| async { get_live_status().await });
+    // Live status: signal + initial load + auto-refresh so the
+    // capture timestamp updates as new clips are processed.
+    let (live_status, set_live_status) = create_signal::<Option<LiveStatus>>(None);
+    {
+        let live_init =
+            create_resource(|| (), |_| async { get_live_status().await });
+        create_effect(move |_| {
+            if let Some(Ok(status)) = live_init.get() {
+                set_live_status.set(status);
+            }
+        });
+    }
+
+    // Auto-refresh live status every 5 seconds
+    #[cfg(feature = "hydrate")]
+    {
+        set_interval_with_handle(
+            move || {
+                spawn_local(async move {
+                    if let Ok(status) = get_live_status().await {
+                        set_live_status.set(status);
+                    }
+                });
+            },
+            std::time::Duration::from_secs(5),
+        )
+        .ok();
+    }
+
     let tz =
         create_resource(|| (), |_| async { get_tz_settings().await });
 
@@ -246,45 +273,43 @@ pub fn Home() -> impl IntoView {
                 })}
             </Suspense>
 
-            // Live status indicator
-            <Suspense fallback=move || ()>
-                {move || {
-                    let tz_data = tz.get().and_then(|r| r.ok()).unwrap_or((0, false));
-                    live.get().map(|res| match res {
-                        Ok(Some(status)) => {
-                            let node = status.source_node
-                                .as_deref()
-                                .map(|u| node_label(u))
-                                .unwrap_or_else(node_name_or_local);
-                            let cap_time = status.captured_at
-                                .as_deref()
-                                .map(|ts| format_capture_time(ts, tz_data.0, tz_data.1))
-                                .unwrap_or_default();
+            // Live status indicator (auto-refreshes every 5s)
+            {move || {
+                let tz_data = tz.get().and_then(|r| r.ok()).unwrap_or((0, false));
+                match live_status.get() {
+                    Some(status) => {
+                        let node = status.source_node
+                            .as_deref()
+                            .map(|u| node_label(u))
+                            .unwrap_or_else(node_name_or_local);
+                        let cap_time = status.captured_at
+                            .as_deref()
+                            .map(|ts| format_capture_time(ts, tz_data.0, tz_data.1))
+                            .unwrap_or_default();
 
-                            view! {
-                                <div class="live-indicator">
-                                    <span class="live-dot"></span>
-                                    " Now processing from "
-                                    <strong>{node}</strong>
-                                    {if !cap_time.is_empty() {
-                                        view! { <span>", captured at " {cap_time}</span> }.into_view()
-                                    } else {
-                                        view! {}.into_view()
-                                    }}
-                                    " \u{2014} "
-                                    {status.detections_last_hour.to_string()} " det/h"
-                                </div>
-                            }.into_view()
-                        }
-                        _ => view! {
-                            <div class="live-indicator offline">
-                                <span class="live-dot offline"></span>
-                                " Waiting for first clip\u{2026}"
+                        view! {
+                            <div class="live-indicator">
+                                <span class="live-dot"></span>
+                                " Now processing from "
+                                <strong>{node}</strong>
+                                {if !cap_time.is_empty() {
+                                    view! { <span>", captured at " {cap_time}</span> }.into_view()
+                                } else {
+                                    view! {}.into_view()
+                                }}
+                                " \u{2014} "
+                                {status.detections_last_hour.to_string()} " det/h"
                             </div>
-                        }.into_view(),
-                    })
-                }}
-            </Suspense>
+                        }.into_view()
+                    }
+                    None => view! {
+                        <div class="live-indicator offline">
+                            <span class="live-dot offline"></span>
+                            " Waiting for first clip\u{2026}"
+                        </div>
+                    }.into_view(),
+                }
+            }}
 
             // Camera preview panel
             <section class="preview-panel">
