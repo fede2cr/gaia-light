@@ -58,7 +58,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        ipython tqdm matplotlib psutil \
        onnx onnxruntime onnxsim onnxscript timm onnx2torch \
        lightning omegaconf PytorchWildlife \
-       Cython \
+       Cython gdown \
     && pip install --no-cache-dir \
        git+https://github.com/KaiyangZhou/deep-person-reid.git
 
