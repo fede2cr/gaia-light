@@ -116,23 +116,19 @@ pub fn identify_camera(device: &str) -> CameraKind {
 
 // ── Brightness measurement ───────────────────────────────────────────
 
-/// Grab a single JPEG frame and return the mean luma (0–255).
+/// Grab a single frame and return the mean luma (0–255).
 ///
 /// Extracts a frame from the most recent **completed** MP4 clip on
-/// disk.  This avoids opening the V4L2 device a second time (which
-/// would fail with "Device or resource busy" while the main capture
-/// ffmpeg is streaming).
+/// disk using ffmpeg, pipes raw grayscale pixel data through stdout,
+/// and computes the mean directly.  The frame is downscaled to 320 px
+/// wide to keep memory usage minimal (~57 KB for 16:9 video instead of
+/// the ~8 MB that full-resolution RGB+grayscale decoding would need).
 ///
 /// Returns `None` if no completed clip is available or extraction
 /// fails.  During the first segment period after startup there will be
 /// no completed clips, so the probe simply returns `None` — this is
 /// harmless.
 pub fn probe_brightness(_device: &str, tmp_dir: &Path) -> Option<f64> {
-    let probe_path = tmp_dir.join("_brightness_probe.jpg");
-
-    // Remove stale probe
-    let _ = std::fs::remove_file(&probe_path);
-
     let clip = match find_latest_clip(tmp_dir) {
         Some(c) => c,
         None => {
@@ -142,31 +138,45 @@ pub fn probe_brightness(_device: &str, tmp_dir: &Path) -> Option<f64> {
     };
 
     debug!("Brightness probe: extracting frame from {}", clip.display());
-    let status = Command::new("ffmpeg")
+
+    // Ask ffmpeg to output one raw gray8 frame to stdout, downscaled to
+    // 320 px wide.  This avoids writing a temporary JPEG to disk and
+    // eliminates the `image` crate decode/conversion pipeline.
+    let output = Command::new("ffmpeg")
         .args([
             "-hide_banner",
             "-loglevel", "error",
             "-nostdin",
-            "-sseof", "-1",    // seek to 1 second before end
+            "-sseof", "-1",       // seek to 1 second before end
             "-i",
         ])
         .arg(clip.as_os_str())
         .args([
             "-frames:v", "1",
-            "-q:v", "2",
-            "-y",
+            "-vf", "scale=320:-2", // downscale; -2 keeps height even
+            "-pix_fmt", "gray",
+            "-f", "rawvideo",
+            "pipe:1",              // write raw pixels to stdout
         ])
-        .arg(probe_path.as_os_str())
-        .status();
+        .output();
 
-    match status {
-        Ok(s) if s.success() => {
-            let mean = compute_mean_luma(&probe_path);
-            let _ = std::fs::remove_file(&probe_path);
-            mean
+    match output {
+        Ok(out) if out.status.success() => {
+            let pixels = &out.stdout;
+            if pixels.is_empty() {
+                debug!("Brightness probe: ffmpeg produced no pixel data");
+                return None;
+            }
+            let sum: u64 = pixels.iter().map(|&p| p as u64).sum();
+            let mean = sum as f64 / pixels.len() as f64;
+            debug!(
+                "Brightness probe: {} gray pixels, mean luma {mean:.1}",
+                pixels.len()
+            );
+            Some(mean)
         }
         Ok(s) => {
-            debug!("Brightness probe ffmpeg exited with {s} — clip may be corrupt");
+            debug!("Brightness probe ffmpeg exited with {} — clip may be corrupt", s.status);
             // Remove the corrupt clip so we don't keep retrying it.
             warn!(
                 "Removing unreadable clip {} (possible incomplete segment \
@@ -229,18 +239,6 @@ fn find_latest_clip(dir: &Path) -> Option<std::path::PathBuf> {
         .skip(1)
         .find(|(_, mtime)| *mtime < cutoff)
         .map(|(path, _)| path)
-}
-
-/// Compute mean luma from a JPEG file on disk.
-fn compute_mean_luma(path: &Path) -> Option<f64> {
-    let img = image::open(path).ok()?;
-    let grey = img.to_luma8();
-    let count = grey.len() as u64;
-    if count == 0 {
-        return None;
-    }
-    let sum: u64 = grey.iter().map(|&p| p as u64).sum();
-    Some(sum as f64 / count as f64)
 }
 
 // ── V4L2 control ─────────────────────────────────────────────────────

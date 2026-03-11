@@ -324,7 +324,7 @@ async fn process_cycle(
             continue;
         }
 
-        info!(
+        debug!(
             "[{}] Found {} clip(s) to process",
             base_url,
             clips.len()
