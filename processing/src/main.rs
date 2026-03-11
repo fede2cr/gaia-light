@@ -83,6 +83,8 @@ async fn main() -> Result<()> {
             files.push(kind.onnx_filename());
             files.push(kind.labels_filename());
         }
+        // Person re-identification model (optional)
+        files.push(model::ReIdentifier::FILENAME);
         files
     };
     let dl_errors = download::ensure_models(&config.model_dir, &required_files);
@@ -123,6 +125,18 @@ async fn main() -> Result<()> {
             }
         }
     }
+
+    // Load person re-identification model (optional)
+    let mut reidentifier: Option<model::ReIdentifier> = match model::ReIdentifier::load(&config) {
+        Ok(r) => {
+            info!("Person re-identifier loaded (OSNet AIN x1.0)");
+            Some(r)
+        }
+        Err(e) => {
+            info!("Person re-identifier not available (will retry): {e:#}");
+            None
+        }
+    };
 
     // ── mDNS registration ────────────────────────────────────────
     let discovery_handle =
@@ -190,6 +204,14 @@ async fn main() -> Result<()> {
             }
         });
 
+        // Retry re-identifier if not loaded yet
+        if reidentifier.is_none() {
+            if let Ok(r) = model::ReIdentifier::load(&config) {
+                info!("Person re-identifier now available");
+                reidentifier = Some(r);
+            }
+        }
+
         // Read runtime settings from the shared volume (written by the
         // web dashboard settings page).  Overrides take effect each cycle.
         let rt = gaia_light_common::settings::load(&config.recs_dir);
@@ -227,6 +249,7 @@ async fn main() -> Result<()> {
             &db,
             detector.as_ref(),
             &active_classifiers,
+            reidentifier.as_ref(),
             &capture_urls,
             effective_confidence,
             effective_species_conf,
@@ -267,6 +290,7 @@ async fn process_cycle(
     db: &db::Database,
     detector: Option<&model::Detector>,
     classifiers: &[&model::Classifier],
+    reidentifier: Option<&model::ReIdentifier>,
     capture_urls: &[String],
     effective_confidence: f64,
     effective_species_conf: f64,
@@ -580,6 +604,62 @@ async fn process_cycle(
                             &config.extracted_dir,
                         );
 
+                        // ── Person re-identification ─────────────────
+                        let individual_id = if det.class == "person" {
+                            if let Some(reid) = reidentifier {
+                                if let Some(embedding) = reid.embed(&crop) {
+                                    match db.find_matching_individual(&embedding) {
+                                        Ok(Some(id)) => {
+                                            if let Err(e) = db.touch_individual(id) {
+                                                warn!("Cannot update individual {id}: {e}");
+                                            }
+                                            info!(
+                                                "  → Person re-ID: matched individual #{id}"
+                                            );
+                                            Some(id)
+                                        }
+                                        Ok(None) => {
+                                            // Unknown person — create new individual
+                                            let crop_str = crop_path
+                                                .as_ref()
+                                                .map(|p| p.to_string_lossy().to_string());
+                                            match db.create_individual(
+                                                &embedding,
+                                                crop_str.as_deref(),
+                                            ) {
+                                                Ok(id) => {
+                                                    warn!(
+                                                        "⚠️  UNKNOWN PERSON detected — \
+                                                         created new individual #{id} \
+                                                         (clip={}, frame={}, confidence={:.0}%)",
+                                                        clip.filename,
+                                                        frame_idx,
+                                                        det.confidence * 100.0,
+                                                    );
+                                                    Some(id)
+                                                }
+                                                Err(e) => {
+                                                    error!("Cannot create individual: {e}");
+                                                    None
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("Re-ID matching error: {e}");
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    debug!("  → Re-ID embedding failed for person crop");
+                                    None
+                                }
+                            } else {
+                                None // no re-identifier loaded
+                            }
+                        } else {
+                            None // not a person detection
+                        };
+
                         // Build detection row
                         let row = db::DetectionRow {
                             timestamp: clip.created.clone(),
@@ -609,6 +689,7 @@ async fn process_cycle(
                                 .processing_instance
                                 .clone(),
                             source_node: base_url.to_string(),
+                            individual_id,
                         };
 
                         // Insert into DB
@@ -799,6 +880,23 @@ fn check_models(args: &[String]) -> Result<()> {
                 kind.onnx_filename(),
             );
         }
+    }
+
+    // --- Person re-identifier (optional) ----------------------------------
+    let reid_path = model_dir.join(model::ReIdentifier::FILENAME);
+    if reid_path.exists() {
+        info!("Loading re-identifier ({})...", model::ReIdentifier::FILENAME);
+        let reid = model::ReIdentifier::load(&config)
+            .context("Re-identifier model failed to load")?;
+        info!("Re-identifier loaded — running dummy inference...");
+        let crop = DynamicImage::new_rgb8(8, 8);
+        let _emb = reid.embed(&crop);
+        info!("Re-identifier smoke-test OK");
+    } else {
+        info!(
+            "Re-identifier ({}) not present — skipping (optional)",
+            model::ReIdentifier::FILENAME,
+        );
     }
 
     info!("=== All model checks passed ===");

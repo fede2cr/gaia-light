@@ -14,6 +14,16 @@ pub fn DetectionCard(detection: WebDetection) -> impl IntoView {
     let class_badge = detection.class.clone();
     let source_label = detection.source_label();
 
+    // Individual identity for person detections
+    let individual_label = if detection.class == "person" {
+        detection.individual_name.as_ref()
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .or_else(|| detection.individual_id.map(|id| format!("Person #{id}")))
+    } else {
+        None
+    };
+
     // Pick the best available timestamp
     let timestamp = if !detection.timestamp.is_empty() {
         // Clip capture time: "2026-03-05T19:08:27" → "2026-03-05 19:08"
@@ -89,6 +99,13 @@ pub fn DetectionCard(detection: WebDetection) -> impl IntoView {
                         {species_model.map(|m| view! {
                             <span class="species-model" title="Classifier model">{m}</span>
                         })}
+                    </div>
+                })}
+
+                {individual_label.map(|name| view! {
+                    <div class="individual-row">
+                        <span class="individual-badge">"👤"</span>
+                        <span class="individual-name">{name}</span>
                     </div>
                 })}
 

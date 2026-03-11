@@ -57,7 +57,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        numpy opencv-python-headless pandas requests pyyaml scipy seaborn \
        ipython tqdm matplotlib psutil \
        onnx onnxruntime onnxsim onnxscript timm onnx2torch \
-       lightning omegaconf PytorchWildlife
+       lightning omegaconf PytorchWildlife \
+       git+https://github.com/KaiyangZhou/deep-person-reid.git
 
 WORKDIR /export
 

@@ -379,6 +379,93 @@ def export_ai4g_amazon_v2(output_dir: str) -> None:
           f"({os.path.getsize(onnx_path):,} bytes, {len(labels_list)} classes)")
 
 
+def export_osnet(output_dir: str) -> None:
+    """Export OSNet person re-identification model to ONNX.
+
+    Source: KaiyangZhou/deep-person-reid (torchreid) — MIT licence.
+
+    Architecture : OSNet x1.0 with domain-generalisation (AIN variant)
+    Input        : [1, 3, 256, 128]  NCHW, RGB, normalised 0-1
+    Output       : [1, 512]  embedding vector
+    Weights      : osnet_ain_x1_0 pretrained on MSMT17 (domain-generalised)
+    """
+    import numpy as np
+    import onnx
+    import onnxruntime as ort
+    import torch
+
+    onnx_path = os.path.join(output_dir, "osnet_ain.onnx")
+
+    if os.path.exists(onnx_path):
+        print(f"OSNet ONNX already exists, skipping export")
+        return
+
+    # -- 1. Install torchreid if not available -----------------------------
+    try:
+        import torchreid  # noqa: F401
+    except ImportError:
+        import subprocess
+        print("Installing torchreid (deep-person-reid)...")
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", "--no-cache-dir",
+            "git+https://github.com/KaiyangZhou/deep-person-reid.git",
+        ])
+        import torchreid  # noqa: F401
+
+    # -- 2. Build the model with pretrained weights ------------------------
+    print("Loading OSNet AIN x1_0 (domain-generalised, pretrained)...")
+    model = torchreid.models.build_model(
+        name="osnet_ain_x1_0",
+        num_classes=1,      # not used for embedding extraction
+        pretrained=True,
+    )
+    model.eval()
+
+    # Strip the classifier head so we get the 512-d embedding directly.
+    # In eval mode, torchreid models return features before the FC layer
+    # when `self.training` is False.  To make the ONNX graph cleaner,
+    # replace the fc + classifier with Identity so the output is the
+    # pooled 512-d vector.
+    model.classifier = torch.nn.Identity()
+    model.fc = torch.nn.Identity()
+
+    # -- 3. Export to ONNX -------------------------------------------------
+    print("Exporting OSNet to ONNX...")
+    dummy = torch.zeros(1, 3, 256, 128)
+
+    export_kwargs = dict(
+        opset_version=18,
+        input_names=["image"],
+        output_names=["embedding"],
+    )
+
+    import inspect
+    if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+        export_kwargs["dynamo"] = False
+
+    torch.onnx.export(model, dummy, onnx_path, **export_kwargs)
+
+    # -- 4. Internalize external data if needed ----------------------------
+    data_file = onnx_path + ".data"
+    if os.path.exists(data_file):
+        print("  Internalizing external tensor data...")
+        model_onnx = onnx.load(onnx_path, load_external_data=True)
+        onnx.save_model(model_onnx, onnx_path, save_as_external_data=False)
+        os.remove(data_file)
+
+    # -- 5. Validate -------------------------------------------------------
+    print("Validating OSNet ONNX with onnxruntime...")
+    sess = ort.InferenceSession(onnx_path)
+    result = sess.run(None, {"image": np.zeros((1, 3, 256, 128), dtype=np.float32)})
+    shape = result[0].shape
+    print(f"  ONNX validation OK — output shape: {shape}")
+    assert len(shape) == 2, f"Expected 2D [1, D], got {shape}"
+    assert shape[1] == 512, f"Expected 512-d embedding, got {shape[1]}"
+
+    print(f"OSNet ONNX ready: {onnx_path} "
+          f"({os.path.getsize(onnx_path):,} bytes, 512-d embedding)")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <output_dir>")
@@ -411,6 +498,16 @@ def main() -> None:
         print(f"WARNING: AI4G-Amazon-V2 export failed: {e}")
         traceback.print_exc()
         print("  The detector will still work without this classifier.")
+
+    # ── Person re-identification (optional — for security camera mode) ──
+
+    # OSNet AIN x1.0 (person re-ID embeddings)
+    try:
+        export_osnet(output_dir)
+    except Exception as e:
+        print(f"WARNING: OSNet export failed: {e}")
+        traceback.print_exc()
+        print("  Person re-identification will not be available.")
 
     print()
     print("Model export complete. Files in", output_dir + ":")

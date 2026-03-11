@@ -119,6 +119,13 @@ pub fn identify_camera(device: &str) -> CameraKind {
 /// Grab a single JPEG frame from the V4L2 device using ffmpeg and
 /// return the mean luma (0–255).
 ///
+/// Instead of opening the V4L2 device directly (which would conflict
+/// with the main capture ffmpeg that holds the device exclusively),
+/// this extracts a single frame from the most recent MP4 clip already
+/// being recorded.  Falls back to a direct V4L2 grab only when no
+/// clips are available yet (e.g. on first startup before any segment
+/// has been written).
+///
 /// Returns `None` if frame capture or analysis fails.
 pub fn probe_brightness(device: &str, tmp_dir: &Path) -> Option<f64> {
     let probe_path = tmp_dir.join("_brightness_probe.jpg");
@@ -126,6 +133,45 @@ pub fn probe_brightness(device: &str, tmp_dir: &Path) -> Option<f64> {
     // Remove stale probe
     let _ = std::fs::remove_file(&probe_path);
 
+    // ── Strategy 1: extract from the latest recorded clip ────────────
+    // This avoids opening /dev/videoN a second time while the main
+    // capture ffmpeg is streaming, preventing "Device or resource busy".
+    if let Some(clip) = find_latest_clip(tmp_dir) {
+        let status = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel", "error",
+                "-nostdin",
+                "-sseof", "-1",    // seek to 1 second before end
+                "-i",
+            ])
+            .arg(clip.as_os_str())
+            .args([
+                "-frames:v", "1",
+                "-q:v", "2",
+                "-y",
+            ])
+            .arg(probe_path.as_os_str())
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                let mean = compute_mean_luma(&probe_path);
+                let _ = std::fs::remove_file(&probe_path);
+                return mean;
+            }
+            Ok(s) => {
+                debug!("Brightness probe (clip) ffmpeg exited with {s}");
+            }
+            Err(e) => {
+                debug!("Brightness probe (clip) ffmpeg failed: {e}");
+            }
+        }
+    }
+
+    // ── Strategy 2: fall back to direct V4L2 grab ────────────────────
+    // Only used when no clips exist yet (first few seconds after start).
+    debug!("No clips available for brightness probe — trying direct V4L2 grab");
     let status = Command::new("ffmpeg")
         .args([
             "-hide_banner",
@@ -143,11 +189,11 @@ pub fn probe_brightness(device: &str, tmp_dir: &Path) -> Option<f64> {
     match status {
         Ok(s) if s.success() => {}
         Ok(s) => {
-            debug!("Brightness probe ffmpeg exited with {s}");
+            debug!("Brightness probe (v4l2) ffmpeg exited with {s}");
             return None;
         }
         Err(e) => {
-            debug!("Brightness probe ffmpeg failed: {e}");
+            debug!("Brightness probe (v4l2) ffmpeg failed: {e}");
             return None;
         }
     }
@@ -155,6 +201,36 @@ pub fn probe_brightness(device: &str, tmp_dir: &Path) -> Option<f64> {
     let mean = compute_mean_luma(&probe_path);
     let _ = std::fs::remove_file(&probe_path);
     mean
+}
+
+/// Find the most recently modified `.mp4` clip in the data directory.
+///
+/// Skips clips younger than 3 seconds to avoid reading a segment that
+/// ffmpeg is still actively writing.
+fn find_latest_clip(dir: &Path) -> Option<std::path::PathBuf> {
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3);
+
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map_or(false, |ext| ext == "mp4")
+        })
+        .filter(|e| {
+            // Only consider clips that are at least 3 seconds old
+            e.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map_or(false, |mtime| mtime < cutoff)
+        })
+        .max_by_key(|e| {
+            e.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+        })
+        .map(|e| e.path())
 }
 
 /// Compute mean luma from a JPEG file on disk.
@@ -258,7 +334,23 @@ pub fn probe_loop(
         camera_kind.display_name()
     );
 
-    // Initial probe right away
+    // Wait for the first capture segment to be written before probing.
+    // This avoids a direct V4L2 grab that would conflict with the main
+    // capture ffmpeg which is already streaming from the device.
+    const INITIAL_DELAY_SECS: u64 = 15;
+    info!(
+        "Brightness probe: waiting {INITIAL_DELAY_SECS}s for first \
+         capture segment before initial probe"
+    );
+    for _ in 0..INITIAL_DELAY_SECS {
+        if shutdown.load(Ordering::Relaxed) {
+            debug!("Brightness probe thread exiting (shutdown during initial delay)");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    // Initial probe
     run_single_probe(&device, &tmp_dir, threshold, &camera_kind, &state);
 
     let mut elapsed = 0u64;

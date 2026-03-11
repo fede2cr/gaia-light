@@ -8,7 +8,7 @@ use std::path::Path;
 use rusqlite::{params, Connection};
 
 use crate::model::{
-    ClassSummary, DailyCount, LiveStatus, PreviewInfo, SpeciesSummary,
+    ClassSummary, DailyCount, Individual, LiveStatus, PreviewInfo, SpeciesSummary,
     SystemInfo, TrainingCandidate, WebDetection,
 };
 
@@ -35,28 +35,32 @@ pub fn recent_detections(
     let (sql, row_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
         match after_id {
             Some(id) => (
-                "SELECT id, timestamp, clip_filename, frame_index,
-                        detector_model, class, confidence,
-                        bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                        species, species_confidence, species_model, crop_path,
-                        latitude, longitude, processing_instance,
-                        created_at, COALESCE(source_node, '')
-                 FROM detections
-                 WHERE id > ?1
-                 ORDER BY id DESC
+                "SELECT d.id, d.timestamp, d.clip_filename, d.frame_index,
+                        d.detector_model, d.class, d.confidence,
+                        d.bbox_x1, d.bbox_y1, d.bbox_x2, d.bbox_y2,
+                        d.species, d.species_confidence, d.species_model, d.crop_path,
+                        d.latitude, d.longitude, d.processing_instance,
+                        d.created_at, COALESCE(d.source_node, ''),
+                        d.individual_id, i.name
+                 FROM detections d
+                 LEFT JOIN individuals i ON d.individual_id = i.id
+                 WHERE d.id > ?1
+                 ORDER BY d.id DESC
                  LIMIT ?2"
                     .into(),
                 vec![Box::new(id), Box::new(limit)],
             ),
             None => (
-                "SELECT id, timestamp, clip_filename, frame_index,
-                        detector_model, class, confidence,
-                        bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                        species, species_confidence, species_model, crop_path,
-                        latitude, longitude, processing_instance,
-                        created_at, COALESCE(source_node, '')
-                 FROM detections
-                 ORDER BY id DESC
+                "SELECT d.id, d.timestamp, d.clip_filename, d.frame_index,
+                        d.detector_model, d.class, d.confidence,
+                        d.bbox_x1, d.bbox_y1, d.bbox_x2, d.bbox_y2,
+                        d.species, d.species_confidence, d.species_model, d.crop_path,
+                        d.latitude, d.longitude, d.processing_instance,
+                        d.created_at, COALESCE(d.source_node, ''),
+                        d.individual_id, i.name
+                 FROM detections d
+                 LEFT JOIN individuals i ON d.individual_id = i.id
+                 ORDER BY d.id DESC
                  LIMIT ?1"
                     .into(),
                 vec![Box::new(limit)],
@@ -88,6 +92,8 @@ pub fn recent_detections(
                 processing_instance: row.get(17)?,
                 created_at: row.get(18)?,
                 source_node: row.get(19)?,
+                individual_id: row.get(20)?,
+                individual_name: row.get(21)?,
             })
         },
     )?;
@@ -312,4 +318,115 @@ pub fn preview_info(data_dir: &Path) -> PreviewInfo {
             modified_ms: 0,
         },
     }
+}
+
+// ── Individuals (person re-ID) ───────────────────────────────────────────
+
+/// List all known individuals, ordered by most recently seen.
+pub fn list_individuals(
+    db_path: &Path,
+) -> Result<Vec<Individual>, rusqlite::Error> {
+    let conn = open(db_path)?;
+
+    // The individuals table may not exist yet (if the processing
+    // container hasn't run the latest schema migration).  In that case,
+    // return an empty list gracefully.
+    let table_exists: bool = conn
+        .prepare("SELECT 1 FROM individuals LIMIT 0")
+        .is_ok();
+    if !table_exists {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT id, name, detection_count, first_seen, last_seen,
+                representative_crop
+         FROM individuals
+         ORDER BY last_seen DESC",
+    )?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Individual {
+                id: row.get(0)?,
+                name: row.get::<_, String>(1).unwrap_or_default(),
+                detection_count: row.get(2)?,
+                first_seen: row.get(3)?,
+                last_seen: row.get(4)?,
+                representative_crop: row.get(5)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(rows)
+}
+
+/// Rename an individual (write operation — opens read-write).
+pub fn rename_individual(
+    db_path: &Path,
+    individual_id: i64,
+    new_name: &str,
+) -> Result<(), rusqlite::Error> {
+    let conn = Connection::open(db_path)?;
+    conn.execute_batch("PRAGMA busy_timeout = 3000;")?;
+    conn.execute(
+        "UPDATE individuals SET name = ?1 WHERE id = ?2",
+        params![new_name, individual_id],
+    )?;
+    Ok(())
+}
+
+/// Get detections for a specific individual.
+pub fn individual_detections(
+    db_path: &Path,
+    individual_id: i64,
+    limit: u32,
+) -> Result<Vec<WebDetection>, rusqlite::Error> {
+    let conn = open(db_path)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT d.id, d.timestamp, d.clip_filename, d.frame_index,
+                d.detector_model, d.class, d.confidence,
+                d.bbox_x1, d.bbox_y1, d.bbox_x2, d.bbox_y2,
+                d.species, d.species_confidence, d.species_model, d.crop_path,
+                d.latitude, d.longitude, d.processing_instance,
+                d.created_at, COALESCE(d.source_node, ''),
+                d.individual_id, i.name
+         FROM detections d
+         LEFT JOIN individuals i ON d.individual_id = i.id
+         WHERE d.individual_id = ?1
+         ORDER BY d.id DESC
+         LIMIT ?2",
+    )?;
+
+    let rows = stmt
+        .query_map(params![individual_id, limit], |row| {
+            Ok(WebDetection {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                clip_filename: row.get(2)?,
+                frame_index: row.get(3)?,
+                detector_model: row.get(4)?,
+                class: row.get(5)?,
+                confidence: row.get(6)?,
+                bbox_x1: row.get(7)?,
+                bbox_y1: row.get(8)?,
+                bbox_x2: row.get(9)?,
+                bbox_y2: row.get(10)?,
+                species: row.get(11)?,
+                species_confidence: row.get(12)?,
+                species_model: row.get(13)?,
+                crop_path: row.get(14)?,
+                latitude: row.get(15)?,
+                longitude: row.get(16)?,
+                processing_instance: row.get(17)?,
+                created_at: row.get(18)?,
+                source_node: row.get(19)?,
+                individual_id: row.get(20)?,
+                individual_name: row.get(21)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(rows)
 }

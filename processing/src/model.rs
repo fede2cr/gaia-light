@@ -388,6 +388,118 @@ impl Classifier {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+/// Re-identification embedding vector.
+pub type Embedding = Vec<f32>;
+
+// ── Person Re-Identifier (OSNet) ─────────────────────────────────────────
+
+/// OSNet AIN x1.0 person re-identification model.
+///
+/// Input : `[1, 3, 256, 128]`  (NCHW, RGB, normalised 0-1)
+/// Output: `[1, 512]`         (embedding vector)
+pub struct ReIdentifier {
+    model: TypedRunnableModel<TypedModel>,
+}
+
+impl ReIdentifier {
+    /// Expected ONNX filename inside the model directory.
+    pub const FILENAME: &'static str = "osnet_ain.onnx";
+    /// Input height (person crops are taller than wide).
+    const INPUT_H: u32 = 256;
+    /// Input width.
+    const INPUT_W: u32 = 128;
+
+    /// Load the re-ID ONNX model from disk.
+    pub fn load(config: &Config) -> Result<Self> {
+        let model_path = find_onnx(&config.model_dir, Self::FILENAME)?;
+        info!("Loading re-identifier from {}", model_path.display());
+
+        let typed = tract_onnx::onnx()
+            .model_for_path(&model_path)
+            .context("Cannot parse re-ID ONNX model")?
+            .into_typed()
+            .context("Cannot type re-ID model")?;
+
+        // Resolve any symbolic "batch" dimension to concrete 1.
+        let batch = typed.sym("batch");
+        let typed = typed
+            .concretize_dims(&SymbolValues::default().with(&batch, 1))
+            .context("Cannot concretize re-ID batch dimension")?;
+
+        let model = typed
+            .into_optimized()
+            .context("Cannot optimise re-ID model")?
+            .into_runnable()
+            .context("Cannot make re-ID model runnable")?;
+
+        Ok(Self { model })
+    }
+
+    /// Compute a 512-dimensional embedding for a person crop.
+    ///
+    /// The crop is resized to 256×128 (h×w) preserving the portrait
+    /// aspect ratio expected by OSNet.
+    pub fn embed(&self, crop: &DynamicImage) -> Option<Embedding> {
+        // Resize to H×W = 256×128 and convert to CHW float tensor.
+        let resized = crop.resize_exact(
+            Self::INPUT_W,
+            Self::INPUT_H,
+            image::imageops::FilterType::Triangle,
+        );
+        let rgb: image::RgbImage = resized.to_rgb8();
+        let npixels = (Self::INPUT_H * Self::INPUT_W) as usize;
+        let mut data = vec![0.0f32; 3 * npixels];
+        for (i, pixel) in rgb.pixels().enumerate() {
+            data[i] = pixel[0] as f32 / 255.0;
+            data[npixels + i] = pixel[1] as f32 / 255.0;
+            data[2 * npixels + i] = pixel[2] as f32 / 255.0;
+        }
+
+        let tensor: Tensor = tract_ndarray::Array4::from_shape_vec(
+            (1, 3, Self::INPUT_H as usize, Self::INPUT_W as usize),
+            data,
+        )
+        .expect("tensor shape")
+        .into();
+
+        let outputs = match self.model.run(tvec!(tensor.into())) {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::error!("ReIdentifier inference failed: {e:#}");
+                return None;
+            }
+        };
+
+        let emb = match outputs[0].to_array_view::<f32>() {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!("Cannot read re-ID output: {e}");
+                return None;
+            }
+        };
+
+        let flat: Vec<f32> = emb.as_slice().unwrap_or(&[]).to_vec();
+        if flat.is_empty() {
+            return None;
+        }
+
+        // L2-normalise the embedding for cosine similarity comparison
+        let norm: f32 = flat.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm < 1e-8 {
+            return None;
+        }
+        let normalised: Vec<f32> = flat.iter().map(|x| x / norm).collect();
+
+        debug!(
+            "Re-ID embedding: {} dimensions, L2 norm before normalisation = {norm:.4}",
+            normalised.len()
+        );
+        Some(normalised)
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
 /// Find an ONNX file in the model directory.
 ///
 /// First tries the exact filename, then looks for any `.onnx` file

@@ -32,6 +32,8 @@ pub struct DetectionRow {
     pub processing_instance: String,
     /// URL of the capture node that recorded the clip.
     pub source_node: String,
+    /// Re-identified individual ID (persons).
+    pub individual_id: Option<i64>,
 }
 
 /// Lightweight wrapper around a SQLite connection.
@@ -132,7 +134,21 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_training_confidence
                 ON training_candidates (confidence DESC);
             CREATE INDEX IF NOT EXISTS idx_training_created
-                ON training_candidates (created_at);",
+                ON training_candidates (created_at);
+
+            -- Identified individuals (person re-ID)
+            CREATE TABLE IF NOT EXISTS individuals (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name            TEXT NOT NULL DEFAULT '',
+                embedding       BLOB NOT NULL,
+                detection_count INTEGER NOT NULL DEFAULT 1,
+                first_seen      TEXT NOT NULL DEFAULT (datetime('now')),
+                last_seen       TEXT NOT NULL DEFAULT (datetime('now')),
+                representative_crop TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_individuals_name
+                ON individuals (name);",
         )
         .context("Cannot create schema")?;
 
@@ -162,6 +178,18 @@ impl Database {
             info!("Migrated: added source_node column to detections");
         }
 
+        // Migration: add individual_id column (person re-ID)
+        let has_individual_id: bool = conn
+            .prepare("SELECT individual_id FROM detections LIMIT 0")
+            .is_ok();
+        if !has_individual_id {
+            conn.execute_batch(
+                "ALTER TABLE detections ADD COLUMN individual_id INTEGER REFERENCES individuals(id);",
+            )
+            .context("Cannot add individual_id column")?;
+            info!("Migrated: added individual_id column to detections");
+        }
+
         info!("Database schema initialised at {}", path.display());
         Ok(Self { conn })
     }
@@ -173,9 +201,10 @@ impl Database {
                 timestamp, clip_filename, frame_index, detector_model,
                 class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                 species, species_confidence, species_model, crop_path,
-                latitude, longitude, processing_instance, source_node
+                latitude, longitude, processing_instance, source_node,
+                individual_id
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                      ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                      ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             rusqlite::params![
                 d.timestamp,
                 d.clip_filename,
@@ -195,6 +224,7 @@ impl Database {
                 d.longitude,
                 d.processing_instance,
                 d.source_node,
+                d.individual_id,
             ],
         )?;
 
@@ -327,7 +357,7 @@ impl Database {
                     class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
                     species, species_confidence, species_model, crop_path,
                     latitude, longitude, processing_instance,
-                    COALESCE(source_node, '')
+                    COALESCE(source_node, ''), individual_id
              FROM detections
              ORDER BY created_at DESC
              LIMIT ?1",
@@ -354,6 +384,7 @@ impl Database {
                     longitude: row.get(15)?,
                     processing_instance: row.get(16)?,
                     source_node: row.get(17)?,
+                    individual_id: row.get(18)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -381,6 +412,113 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
+
+    // ── Person re-identification ─────────────────────────────────────
+
+    /// Cosine similarity threshold for matching a person embedding to
+    /// an existing individual.  Above this → same person.
+    const REID_THRESHOLD: f64 = 0.65;
+
+    /// Find the best matching individual for an embedding, or return
+    /// `None` if no match exceeds the threshold.
+    pub fn find_matching_individual(&self, embedding: &[f32]) -> Result<Option<i64>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, embedding FROM individuals",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
+            Ok((id, blob))
+        })?;
+
+        let mut best_id: Option<i64> = None;
+        let mut best_sim: f64 = Self::REID_THRESHOLD;
+
+        for row in rows {
+            let (id, blob) = row?;
+            let stored = bytes_to_f32(&blob);
+            let sim = cosine_similarity(embedding, &stored);
+            if sim > best_sim {
+                best_sim = sim;
+                best_id = Some(id);
+            }
+        }
+
+        if let Some(id) = best_id {
+            debug!("Re-ID match: individual {id} (similarity {best_sim:.3})");
+        }
+        Ok(best_id)
+    }
+
+    /// Create a new individual from an embedding.  Returns the new ID.
+    pub fn create_individual(
+        &self,
+        embedding: &[f32],
+        crop_path: Option<&str>,
+    ) -> Result<i64> {
+        let blob = f32_to_bytes(embedding);
+        self.conn.execute(
+            "INSERT INTO individuals (embedding, representative_crop)
+             VALUES (?1, ?2)",
+            rusqlite::params![blob, crop_path],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        info!("Created new individual id={id}");
+        Ok(id)
+    }
+
+    /// Update the last_seen timestamp and detection_count for an individual.
+    pub fn touch_individual(&self, individual_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE individuals
+             SET detection_count = detection_count + 1,
+                 last_seen = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![individual_id],
+        )?;
+        Ok(())
+    }
+
+    /// Rename an individual.
+    pub fn rename_individual(&self, individual_id: i64, name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE individuals SET name = ?1 WHERE id = ?2",
+            rusqlite::params![name, individual_id],
+        )?;
+        info!("Renamed individual {individual_id} to {name:?}");
+        Ok(())
+    }
+}
+
+// ── Embedding serialisation helpers ──────────────────────────────────────
+
+/// Serialise `&[f32]` to little-endian bytes for BLOB storage.
+fn f32_to_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Deserialise little-endian bytes back to `Vec<f32>`.
+fn bytes_to_f32(b: &[u8]) -> Vec<f32> {
+    b.chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+/// Cosine similarity between two vectors.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    let mut dot: f64 = 0.0;
+    let mut na: f64 = 0.0;
+    let mut nb: f64 = 0.0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        let x = *x as f64;
+        let y = *y as f64;
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    let denom = na.sqrt() * nb.sqrt();
+    if denom < 1e-12 { 0.0 } else { dot / denom }
 }
 
 #[cfg(test)]
@@ -414,6 +552,7 @@ mod tests {
             longitude: -72.0,
             processing_instance: "test-01".into(),
             source_node: "http://localhost:8090".into(),
+            individual_id: None,
         };
 
         let id = db.insert_detection(&row).unwrap();

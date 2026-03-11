@@ -56,6 +56,12 @@ pub struct WebDetection {
     /// URL of the capture node that recorded the source clip.
     #[serde(default)]
     pub source_node: String,
+    /// Linked individual ID (from person re-identification).
+    #[serde(default)]
+    pub individual_id: Option<i64>,
+    /// Name of the linked individual (if named).
+    #[serde(default)]
+    pub individual_name: Option<String>,
 }
 
 impl WebDetection {
@@ -214,5 +220,43 @@ impl TrainingCandidate {
     /// Confidence formatted as a percentage string.
     pub fn confidence_pct(&self) -> String {
         format!("{:.0}%", self.confidence * 100.0)
+    }
+}
+
+// ── Individual (person re-ID) ────────────────────────────────────────────────
+
+/// An identified individual (person), tracked by re-ID embeddings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Individual {
+    pub id: i64,
+    /// User-assigned name (empty if not yet labelled).
+    pub name: String,
+    /// Total detection count.
+    pub detection_count: i64,
+    /// First time this individual was seen.
+    pub first_seen: String,
+    /// Most recent sighting.
+    pub last_seen: String,
+    /// Path to the representative crop.
+    #[serde(default)]
+    pub representative_crop: Option<String>,
+}
+
+impl Individual {
+    /// Display name — falls back to "Person #<id>" if unnamed.
+    pub fn display_name(&self) -> String {
+        if self.name.is_empty() {
+            format!("Person #{}", self.id)
+        } else {
+            self.name.clone()
+        }
+    }
+
+    /// URL to serve the representative crop image.
+    pub fn crop_url(&self) -> Option<String> {
+        self.representative_crop.as_ref().map(|p| {
+            let filename = p.rsplit('/').next().unwrap_or(p);
+            format!("/extracted/{filename}")
+        })
     }
 }

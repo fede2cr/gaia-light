@@ -8,6 +8,7 @@ use crate::components::nav::Nav;
 use crate::pages::{
     detections::Detections,
     home::Home,
+    people::People,
     settings::Settings,
     species::Species,
     training::Training,
@@ -46,6 +47,7 @@ pub fn App() -> impl IntoView {
                     <Route path="/" view=Home/>
                     <Route path="/detections" view=Detections/>
                     <Route path="/species" view=Species/>
+                    <Route path="/people" view=People/>
                     <Route path="/settings" view=Settings/>
                     <Route path="/training" view=Training/>
                 </Routes>

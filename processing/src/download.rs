@@ -56,6 +56,9 @@ const MODEL_FILES: &[(&str, &str)] = &[
     ("ai4g_amazon_v2.onnx", ""),
     ("ai4g_amazon_v2_labels.txt", ""),
 
+    // ── Person re-identification: OSNet AIN x1.0 ─────────────────
+    // Exported at build time from torchreid; no public ONNX.
+    ("osnet_ain.onnx", ""),
 ];
 
 /// Ensure all required model files are present in `model_dir`.
