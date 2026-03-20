@@ -21,5 +21,5 @@ tokio.workspace = true
 reqwest.workspace = true
 image.workspace = true
 tract-onnx.workspace = true
-rusqlite.workspace = true
+libsql.workspace = true
 ctrlc.workspace = true

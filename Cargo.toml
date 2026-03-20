@@ -29,8 +29,8 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
 
 # ── HTTP / web ───────────────────────────────────────────────
-axum       = "0.7"
-tower-http = { version = "0.5", features = ["fs", "cors"] }
+axum       = "0.8"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
 reqwest    = { version = "0.12", features = ["json", "blocking"] }
 
 # ── File-system ──────────────────────────────────────────────
@@ -43,7 +43,7 @@ image = "0.25"
 tract-onnx = "0.21"
 
 # ── Database ─────────────────────────────────────────────────
-rusqlite = { version = "0.32", features = ["bundled"] }
+libsql = { version = "0.9", default-features = false, features = ["core"] }
 
 # ── mDNS discovery ───────────────────────────────────────────
 mdns-sd = "0.18"
@@ -52,12 +52,12 @@ mdns-sd = "0.18"
 ctrlc = "3"
 
 # ── Leptos (web UI) ─────────────────────────────────────────
-leptos        = "0.6"
-leptos_router = "0.6"
-leptos_meta   = "0.6"
-leptos_axum   = "0.6"
+leptos        = "0.8"
+leptos_router = "0.8"
+leptos_meta   = "0.8"
+leptos_axum   = "0.8"
 cfg-if        = "1"
-tower         = "0.4"
+tower         = "0.5"
 http          = "1"
 wasm-bindgen  = "0.2"
 console_error_panic_hook = "0.1"

@@ -3,13 +3,17 @@
 //!
 //! These crops form a curated pool for future classifier training.
 
-use leptos::*;
+use leptos::prelude::*;
+use leptos::prelude::{
+    signal, use_context, ElementChild, IntoView, Resource, ServerFnError,
+    Suspense,
+};
 
 use crate::model::TrainingCandidate;
 
 // ── Server function ──────────────────────────────────────────────────────
 
-#[server(GetTrainingCandidates, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_training_candidates(
     page: u32,
     per_page: u32,
@@ -22,6 +26,7 @@ pub async fn get_training_candidates(
         per_page,
         page.saturating_sub(1) * per_page,
     )
+    .await
     .map_err(|e| ServerFnError::new(format!("DB error: {e}")))?;
 
     Ok(TrainingPage { rows, total })
@@ -41,9 +46,9 @@ const PER_PAGE: u32 = 48;
 /// Browseable grid of unclassified animal crops for model training.
 #[component]
 pub fn Training() -> impl IntoView {
-    let (page, set_page) = create_signal(1u32);
+    let (page, set_page) = signal(1u32);
 
-    let data = create_resource(
+    let data = Resource::new(
         move || page.get(),
         move |p| async move { get_training_candidates(p, PER_PAGE).await },
     );
@@ -79,10 +84,10 @@ pub fn Training() -> impl IntoView {
                                             {match crop {
                                                 Some(url) => view! {
                                                     <img class="training-crop" src={url} alt="crop" loading="lazy"/>
-                                                }.into_view(),
+                                                }.into_any(),
                                                 None => view! {
                                                     <div class="training-crop placeholder">"No crop"</div>
-                                                }.into_view(),
+                                                }.into_any(),
                                             }}
                                             <div class="training-meta">
                                                 <span class="confidence high">{conf}</span>
@@ -91,7 +96,7 @@ pub fn Training() -> impl IntoView {
                                             </div>
                                         </div>
                                     }
-                                }).collect_view()}
+                                }).collect::<Vec<_>>()}
                             </div>
 
                             <div class="pagination">
@@ -107,11 +112,11 @@ pub fn Training() -> impl IntoView {
                                     on:click=move |_| set_page.update(|p| *p += 1)
                                 >"Next \u{25b6}"</button>
                             </div>
-                        }.into_view()
+                        }.into_any()
                     }
                     Err(e) => view! {
                         <p class="error">"Error: " {e.to_string()}</p>
-                    }.into_view(),
+                    }.into_any(),
                 })}
             </Suspense>
         </div>

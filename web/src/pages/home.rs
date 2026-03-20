@@ -1,6 +1,12 @@
 //! Home page -- live detection feed with stats overview.
 
-use leptos::*;
+use leptos::prelude::*;
+use leptos::prelude::{
+    signal, use_context, Effect, ElementChild, For, IntoView, Resource,
+    ServerFnError, Suspense,
+};
+#[cfg(feature = "hydrate")]
+use leptos::task::spawn_local;
 
 use crate::components::detection_card::DetectionCard;
 use crate::components::stats_bar::StatsBar;
@@ -104,7 +110,7 @@ fn format_capture_time(iso: &str, offset_hours: i32, dst: bool) -> String {
 
 // ── Server functions ─────────────────────────────────────────────────────────
 
-#[server(GetRecentDetections, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_recent_detections(
     limit: u32,
     after_id: Option<i64>,
@@ -112,25 +118,27 @@ pub async fn get_recent_detections(
     let state = use_context::<crate::app::AppState>()
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
     crate::server::db::recent_detections(&state.db_path, limit, after_id)
+        .await
         .map_err(|e| ServerFnError::new(format!("DB error: {e}")))
 }
 
-#[server(GetSystemInfo, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_system_info() -> Result<SystemInfo, ServerFnError> {
     let state = use_context::<crate::app::AppState>()
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
     crate::server::db::system_info(&state.db_path)
+        .await
         .map_err(|e| ServerFnError::new(format!("DB error: {e}")))
 }
 
-#[server(GetLiveStatus, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_live_status() -> Result<Option<LiveStatus>, ServerFnError> {
     let state = use_context::<crate::app::AppState>()
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
     Ok(crate::server::db::read_live_status(&state.data_dir))
 }
 
-#[server(GetPreviewInfo, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_preview_info() -> Result<PreviewInfo, ServerFnError> {
     let state = use_context::<crate::app::AppState>()
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
@@ -138,7 +146,7 @@ pub async fn get_preview_info() -> Result<PreviewInfo, ServerFnError> {
 }
 
 /// Return the current UTC offset and DST flag from settings.
-#[server(GetTzSettings, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_tz_settings() -> Result<(i32, bool), ServerFnError> {
     let state = use_context::<crate::app::AppState>()
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
@@ -153,16 +161,16 @@ pub async fn get_tz_settings() -> Result<(i32, bool), ServerFnError> {
 pub fn Home() -> impl IntoView {
     // Initial data loads
     let detections =
-        create_resource(|| (), |_| async { get_recent_detections(50, None).await });
+        Resource::new(|| (), |_| async { get_recent_detections(50, None).await });
     let sys_info =
-        create_resource(|| (), |_| async { get_system_info().await });
+        Resource::new(|| (), |_| async { get_system_info().await });
     // Live status: signal + initial load + auto-refresh so the
     // capture timestamp updates as new clips are processed.
-    let (live_status, set_live_status) = create_signal::<Option<LiveStatus>>(None);
+    let (live_status, set_live_status) = signal::<Option<LiveStatus>>(None);
     {
         let live_init =
-            create_resource(|| (), |_| async { get_live_status().await });
-        create_effect(move |_| {
+            Resource::new(|| (), |_| async { get_live_status().await });
+        Effect::new(move || {
             if let Some(Ok(status)) = live_init.get() {
                 set_live_status.set(status);
             }
@@ -186,16 +194,16 @@ pub fn Home() -> impl IntoView {
     }
 
     let tz =
-        create_resource(|| (), |_| async { get_tz_settings().await });
+        Resource::new(|| (), |_| async { get_tz_settings().await });
 
     // Preview: poll server for file modification time to cache-bust the <img>
-    let (preview_ts, set_preview_ts) = create_signal::<u64>(0);
-    let (preview_avail, set_preview_avail) = create_signal(false);
+    let (preview_ts, set_preview_ts) = signal::<u64>(0);
+    let (preview_avail, set_preview_avail) = signal(false);
 
     // Initial preview check
     let preview_res =
-        create_resource(|| (), |_| async { get_preview_info().await });
-    create_effect(move |_| {
+        Resource::new(|| (), |_| async { get_preview_info().await });
+    Effect::new(move || {
         if let Some(Ok(info)) = preview_res.get() {
             set_preview_avail.set(info.available);
             set_preview_ts.set(info.modified_ms);
@@ -222,12 +230,12 @@ pub fn Home() -> impl IntoView {
     }
 
     // Live feed signal for auto-refresh
-    let (feed, set_feed) = create_signal::<Vec<WebDetection>>(vec![]);
+    let (feed, set_feed) = signal::<Vec<WebDetection>>(vec![]);
     #[allow(unused_variables)]
-    let (max_id, set_max_id) = create_signal::<Option<i64>>(None);
+    let (max_id, set_max_id) = signal::<Option<i64>>(None);
 
     // Populate feed when initial data arrives
-    create_effect(move |_| {
+    Effect::new(move || {
         if let Some(Ok(initial)) = detections.get() {
             if let Some(first) = initial.first() {
                 set_max_id.set(Some(first.id));
@@ -268,8 +276,8 @@ pub fn Home() -> impl IntoView {
             // System stats bar
             <Suspense fallback=move || view! { <div class="stats-bar loading">"Loading stats..."</div> }>
                 {move || sys_info.get().map(|res| match res {
-                    Ok(info) => view! { <StatsBar info=info/> }.into_view(),
-                    Err(_) => view! {}.into_view(),
+                    Ok(info) => view! { <StatsBar info=info/> }.into_any(),
+                    Err(_) => view! {}.into_any(),
                 })}
             </Suspense>
 
@@ -293,21 +301,21 @@ pub fn Home() -> impl IntoView {
                                 " Now processing from "
                                 <strong>{node}</strong>
                                 {if !cap_time.is_empty() {
-                                    view! { <span>", captured at " {cap_time}</span> }.into_view()
+                                    view! { <span>", captured at " {cap_time}</span> }.into_any()
                                 } else {
-                                    view! {}.into_view()
+                                    view! {}.into_any()
                                 }}
                                 " \u{2014} "
                                 {status.detections_last_hour.to_string()} " det/h"
                             </div>
-                        }.into_view()
+                        }.into_any()
                     }
                     None => view! {
                         <div class="live-indicator offline">
                             <span class="live-dot offline"></span>
                             " Waiting for first clip\u{2026}"
                         </div>
-                    }.into_view(),
+                    }.into_any(),
                 }
             }}
 
@@ -325,7 +333,7 @@ pub fn Home() -> impl IntoView {
                                     src={src}
                                     alt="Latest processed frame"
                                 />
-                            }.into_view()
+                            }.into_any()
                         } else {
                             view! {
                                 <div class="preview-placeholder">
@@ -338,7 +346,7 @@ pub fn Home() -> impl IntoView {
                                     </svg>
                                     <p>"Waiting for first frame..."</p>
                                 </div>
-                            }.into_view()
+                            }.into_any()
                         }
                     }}
                 </div>

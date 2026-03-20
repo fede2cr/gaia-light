@@ -1,11 +1,15 @@
 //! Detections listing page — full table of recent detections with pagination.
 
-use leptos::*;
+use leptos::prelude::*;
+use leptos::prelude::{
+    signal, use_context, ElementChild, IntoView, Resource, ServerFnError,
+    Suspense,
+};
 
 use crate::components::detection_card::DetectionCard;
 use crate::model::WebDetection;
 
-#[server(GetDetectionPage, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_detection_page(
     limit: u32,
     offset: u32,
@@ -19,6 +23,7 @@ pub async fn get_detection_page(
         limit + offset,
         None,
     )
+    .await
     .map(|all| all.into_iter().skip(offset as usize).collect())
     .map_err(|e| ServerFnError::new(format!("DB error: {e}")))
 }
@@ -26,15 +31,15 @@ pub async fn get_detection_page(
 /// Full detections page with class filter and pagination.
 #[component]
 pub fn Detections() -> impl IntoView {
-    let (page, set_page) = create_signal(0_u32);
+    let (page, set_page) = signal(0_u32);
     let page_size = 30_u32;
 
-    let detections = create_resource(
+    let detections = Resource::new(
         move || page.get(),
         move |p| async move { get_detection_page(page_size, p * page_size).await },
     );
 
-    let (class_filter, set_class_filter) = create_signal(String::new());
+    let (class_filter, set_class_filter) = signal(String::new());
 
     view! {
         <div class="detections-page">
@@ -65,16 +70,16 @@ pub fn Detections() -> impl IntoView {
                                     dets.into_iter().filter(|d| d.class == cf).collect()
                                 };
                                 if filtered.is_empty() {
-                                    view! { <p class="empty-state">"No detections found."</p> }.into_view()
+                                    view! { <p class="empty-state">"No detections found."</p> }.into_any()
                                 } else {
                                     filtered.into_iter().map(|det| {
                                         view! { <DetectionCard detection=det/> }
-                                    }).collect_view()
+                                    }).collect::<Vec<_>>().into_any()
                                 }
                             }
                             Err(e) => view! {
                                 <p class="error">"Error: " {e.to_string()}</p>
-                            }.into_view(),
+                            }.into_any(),
                         })
                     }}
                 </Suspense>

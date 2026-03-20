@@ -1,22 +1,27 @@
 //! People page — browse and manage identified individuals
 //! detected by the person re-identification pipeline.
 
-use leptos::*;
+use leptos::prelude::*;
+use leptos::prelude::{
+    signal, use_context, Action, ElementChild, IntoView, Resource,
+    ServerFnError, Suspense,
+};
 
 use crate::model::{Individual, WebDetection};
 
 // ── Server functions ─────────────────────────────────────────────────────
 
-#[server(GetPeople, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_people() -> Result<Vec<Individual>, ServerFnError> {
     let state = use_context::<crate::app::AppState>()
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
 
     crate::server::db::list_individuals(&state.db_path)
+        .await
         .map_err(|e| ServerFnError::new(format!("DB error: {e}")))
 }
 
-#[server(RenamePerson, "/api")]
+#[server(prefix = "/api")]
 pub async fn rename_person(
     individual_id: i64,
     new_name: String,
@@ -25,10 +30,11 @@ pub async fn rename_person(
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
 
     crate::server::db::rename_individual(&state.db_path, individual_id, &new_name)
+        .await
         .map_err(|e| ServerFnError::new(format!("DB error: {e}")))
 }
 
-#[server(GetPersonDetections, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_person_detections(
     individual_id: i64,
 ) -> Result<Vec<WebDetection>, ServerFnError> {
@@ -36,6 +42,7 @@ pub async fn get_person_detections(
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
 
     crate::server::db::individual_detections(&state.db_path, individual_id, 50)
+        .await
         .map_err(|e| ServerFnError::new(format!("DB error: {e}")))
 }
 
@@ -44,13 +51,13 @@ pub async fn get_person_detections(
 /// People overview page showing all identified individuals.
 #[component]
 pub fn People() -> impl IntoView {
-    let people = create_resource(|| (), |_| async { get_people().await });
+    let people = Resource::new(|| (), |_| async { get_people().await });
 
     // Selected individual for detail view
-    let (selected_id, set_selected_id) = create_signal::<Option<i64>>(None);
+    let (selected_id, set_selected_id) = signal::<Option<i64>>(None);
 
     // Detections for the selected individual
-    let person_detections = create_resource(
+    let person_detections = Resource::new(
         move || selected_id.get(),
         move |id| async move {
             match id {
@@ -61,7 +68,7 @@ pub fn People() -> impl IntoView {
     );
 
     // Rename action
-    let rename_action = create_action(
+    let rename_action = Action::new(
         move |(id, name): &(i64, String)| {
             let id = *id;
             let name = name.clone();
@@ -91,7 +98,7 @@ pub fn People() -> impl IntoView {
                                 "when the processing pipeline detects people."
                             </p>
                         </div>
-                    }.into_view(),
+                    }.into_any(),
                     Ok(list) => {
                         let total = list.len();
                         view! {
@@ -133,20 +140,16 @@ pub fn People() -> impl IntoView {
                                                             alt={display.clone()}
                                                             loading="lazy"
                                                         />
-                                                    }.into_view(),
+                                                    }.into_any(),
                                                     None => view! {
                                                         <div class="person-placeholder">"👤"</div>
-                                                    }.into_view(),
+                                                    }.into_any(),
                                                 }}
                                             </div>
                                             <div class="person-info">
                                                 <span class="person-name">
                                                     {display.clone()}
-                                                    {if is_unnamed {
-                                                        view! { <span class="unnamed-badge">"unnamed"</span> }.into_view()
-                                                    } else {
-                                                        view! { <span/> }.into_view()
-                                                    }}
+                                                    {is_unnamed.then(|| view! { <span class="unnamed-badge">"unnamed"</span> })}
                                                 </span>
                                                 <span class="person-sightings">
                                                     {count}" sighting(s)"
@@ -157,12 +160,12 @@ pub fn People() -> impl IntoView {
                                             </div>
                                         </div>
                                     }
-                                }).collect_view()}
+                                }).collect::<Vec<_>>()}
                             </div>
 
                             // Detail panel for selected individual
                             {move || selected_id.get().map(|id| {
-                                let (edit_name, set_edit_name) = create_signal(String::new());
+                                let (edit_name, set_edit_name) = signal(String::new());
 
                                 view! {
                                     <div class="person-detail">
@@ -216,10 +219,10 @@ pub fn People() -> impl IntoView {
                                                                                         src={url}
                                                                                         loading="lazy"
                                                                                     />
-                                                                                }.into_view(),
+                                                                                }.into_any(),
                                                                                 None => view! {
                                                                                     <div class="crop-placeholder">"?"</div>
-                                                                                }.into_view(),
+                                                                                }.into_any(),
                                                                             }}
                                                                             <div class="person-det-meta">
                                                                                 <span>{ts}</span>
@@ -227,24 +230,24 @@ pub fn People() -> impl IntoView {
                                                                             </div>
                                                                         </div>
                                                                     }
-                                                                }).collect_view()}
+                                                                }).collect::<Vec<_>>()}
                                                             </div>
-                                                        }.into_view()
+                                                        }.into_any()
                                                     },
                                                     _ => view! {
                                                         <p class="empty">"No detections found."</p>
-                                                    }.into_view(),
+                                                    }.into_any(),
                                                 }
                                             })}
                                         </Suspense>
                                     </div>
                                 }
                             })}
-                        }.into_view()
+                        }.into_any()
                     },
                     Err(e) => view! {
                         <p class="error">"Error: " {e.to_string()}</p>
-                    }.into_view(),
+                    }.into_any(),
                 })}
             </Suspense>
         </div>

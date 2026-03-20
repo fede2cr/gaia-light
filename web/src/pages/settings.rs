@@ -3,11 +3,13 @@
 //! Reads/writes `settings.json` on the shared data volume so the
 //! processing container picks up changes on its next poll cycle.
 
-use leptos::*;
-
+use leptos::prelude::*;use leptos::prelude::{
+    signal, use_context, Action, Effect, ElementChild, IntoView, Resource,
+    ServerFnError, Suspense,
+};
 // ── Server functions ─────────────────────────────────────────────────────
 
-#[server(GetSettings, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_settings() -> Result<SettingsPayload, ServerFnError> {
     let state = use_context::<crate::app::AppState>()
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
@@ -30,7 +32,7 @@ pub async fn get_settings() -> Result<SettingsPayload, ServerFnError> {
     })
 }
 
-#[server(SaveSettings, "/api")]
+#[server(prefix = "/api")]
 pub async fn save_settings(
     confidence: Option<f64>,
     species_confidence: Option<f64>,
@@ -100,8 +102,8 @@ const CLASSIFIER_OPTIONS: &[(&str, &str)] = &[
 /// Settings page showing runtime configuration with editable controls.
 #[component]
 pub fn Settings() -> impl IntoView {
-    let settings = create_resource(|| (), |_| async { get_settings().await });
-    let save_action = create_action(
+    let settings = Resource::new(|| (), |_| async { get_settings().await });
+    let save_action = Action::new(
         move |(conf, sp_conf, poll, max_fr, mt, cls_csv, tz_off, tz_dst): &(
             Option<f64>,
             Option<f64>,
@@ -118,17 +120,17 @@ pub fn Settings() -> impl IntoView {
     );
 
     // Signals for each field
-    let (confidence, set_confidence) = create_signal(String::new());
-    let (species_conf, set_species_conf) = create_signal(String::new());
-    let (poll_secs, set_poll_secs) = create_signal(String::new());
-    let (max_frames, set_max_frames) = create_signal(String::new());
-    let (motion_thresh, set_motion_thresh) = create_signal(String::new());
-    let (selected_cls, set_selected_cls) = create_signal(Vec::<String>::new());
-    let (utc_offset, set_utc_offset) = create_signal(String::from("0"));
-    let (dst_on, set_dst_on) = create_signal(false);
+    let (confidence, set_confidence) = signal(String::new());
+    let (species_conf, set_species_conf) = signal(String::new());
+    let (poll_secs, set_poll_secs) = signal(String::new());
+    let (max_frames, set_max_frames) = signal(String::new());
+    let (motion_thresh, set_motion_thresh) = signal(String::new());
+    let (selected_cls, set_selected_cls) = signal(Vec::<String>::new());
+    let (utc_offset, set_utc_offset) = signal(String::from("0"));
+    let (dst_on, set_dst_on) = signal(false);
 
     // Populate signals from loaded settings
-    create_effect(move |_| {
+    Effect::new(move || {
         if let Some(Ok(s)) = settings.get() {
             set_confidence.set(s.confidence.map(|v| format!("{v}")).unwrap_or_default());
             set_species_conf.set(s.species_confidence.map(|v| format!("{v}")).unwrap_or_default());
@@ -170,8 +172,8 @@ pub fn Settings() -> impl IntoView {
                             <h2>"Paths"</h2>
                             <table class="config-table">
                                 <tbody>
-                                    <tr><td class="key">"Database"</td><td class="value">{&cfg.db_path}</td></tr>
-                                    <tr><td class="key">"Data Directory"</td><td class="value">{&cfg.data_dir}</td></tr>
+                                    <tr><td class="key">"Database"</td><td class="value">{cfg.db_path.clone()}</td></tr>
+                                    <tr><td class="key">"Data Directory"</td><td class="value">{cfg.data_dir.clone()}</td></tr>
                                 </tbody>
                             </table>
                         </section>
@@ -275,7 +277,7 @@ pub fn Settings() -> impl IntoView {
                                             <span class="classifier-slug">{slug}</span>
                                         </label>
                                     }
-                                }).collect_view()}
+                                }).collect::<Vec<_>>()}
                             </div>
                         </section>
 
@@ -349,14 +351,14 @@ pub fn Settings() -> impl IntoView {
                         <div class="settings-actions">
                             <button class="btn-save" on:click=on_save>"Save Settings"</button>
                             {move || save_action.value().get().map(|res| match res {
-                                Ok(()) => view! { <span class="save-ok">"Saved \u{2713}"</span> }.into_view(),
-                                Err(e) => view! { <span class="save-err">"Error: " {e.to_string()}</span> }.into_view(),
+                                Ok(()) => view! { <span class="save-ok">"Saved \u{2713}"</span> }.into_any(),
+                                Err(e) => view! { <span class="save-err">"Error: " {e.to_string()}</span> }.into_any(),
                             })}
                         </div>
-                    }.into_view(),
+                    }.into_any(),
                     Err(e) => view! {
                         <p class="error">"Error: " {e.to_string()}</p>
-                    }.into_view(),
+                    }.into_any(),
                 })}
             </Suspense>
         </div>

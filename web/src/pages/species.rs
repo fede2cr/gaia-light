@@ -1,30 +1,35 @@
 //! Species ranking page — top species by detection count.
 
-use leptos::*;
+use leptos::prelude::*;
+use leptos::prelude::{
+    use_context, ElementChild, IntoView, Resource, ServerFnError, Suspense,
+};
 
 use crate::model::SpeciesSummary;
 
-#[server(GetTopSpecies, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_top_species(limit: u32) -> Result<Vec<SpeciesSummary>, ServerFnError> {
     let state = use_context::<crate::app::AppState>()
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
     crate::server::db::top_species(&state.db_path, limit)
+        .await
         .map_err(|e| ServerFnError::new(format!("DB error: {e}")))
 }
 
-#[server(GetDailyCounts, "/api")]
+#[server(prefix = "/api")]
 pub async fn get_daily_counts(days: u32) -> Result<Vec<crate::model::DailyCount>, ServerFnError> {
     let state = use_context::<crate::app::AppState>()
         .ok_or_else(|| ServerFnError::new("Missing AppState"))?;
     crate::server::db::daily_counts(&state.db_path, days)
+        .await
         .map_err(|e| ServerFnError::new(format!("DB error: {e}")))
 }
 
 /// Species ranking and daily trend chart.
 #[component]
 pub fn Species() -> impl IntoView {
-    let species = create_resource(|| (), |_| async { get_top_species(50).await });
-    let daily = create_resource(|| (), |_| async { get_daily_counts(30).await });
+    let species = Resource::new(|| (), |_| async { get_top_species(50).await });
+    let daily = Resource::new(|| (), |_| async { get_daily_counts(30).await });
 
     view! {
         <div class="species-page">
@@ -37,7 +42,7 @@ pub fn Species() -> impl IntoView {
                     {move || species.get().map(|res| match res {
                         Ok(list) if list.is_empty() => view! {
                             <p class="empty-state">"No species identified yet."</p>
-                        }.into_view(),
+                        }.into_any(),
                         Ok(list) => {
                             let max_count = list.first().map(|s| s.count).unwrap_or(1);
                             view! {
@@ -66,14 +71,14 @@ pub fn Species() -> impl IntoView {
                                                     </td>
                                                 </tr>
                                             }
-                                        }).collect_view()}
+                                        }).collect::<Vec<_>>()}
                                     </tbody>
                                 </table>
-                            }.into_view()
+                            }.into_any()
                         }
                         Err(e) => view! {
                             <p class="error">"Error: " {e.to_string()}</p>
-                        }.into_view(),
+                        }.into_any(),
                     })}
                 </Suspense>
             </section>
@@ -84,7 +89,7 @@ pub fn Species() -> impl IntoView {
                 <Suspense fallback=move || view! { <p class="loading">"Loading..."</p> }>
                     {move || daily.get().map(|res| match res {
                         Ok(counts) if counts.is_empty() =>
-                            view! { <p class="empty-state">"No activity yet."</p> }.into_view(),
+                            view! { <p class="empty-state">"No activity yet."</p> }.into_any(),
                         Ok(counts) => {
                             let max_c = counts.iter().map(|d| d.total).max().unwrap_or(1);
                             view! {
@@ -97,12 +102,12 @@ pub fn Species() -> impl IntoView {
                                                 <span class="day-label">{d.date.chars().skip(5).collect::<String>()}</span>
                                             </div>
                                         }
-                                    }).collect_view()}
+                                    }).collect::<Vec<_>>()}
                                 </div>
-                            }.into_view()
+                            }.into_any()
                         }
                         Err(e) =>
-                            view! { <p class="error">{e.to_string()}</p> }.into_view(),
+                            view! { <p class="error">{e.to_string()}</p> }.into_any(),
                     })}
                 </Suspense>
             </section>

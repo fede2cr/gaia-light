@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
         .context("Cannot create model_dir")?;
 
     // ── Database ─────────────────────────────────────────────────
-    let db = db::Database::open(&config.db_path)
+    let db = db::Database::open(&config.db_path).await
         .context("Cannot open SQLite database")?;
     info!("Database ready at {}", config.db_path.display());
 
@@ -347,7 +347,7 @@ async fn process_cycle(
             }
 
             // Skip clips we have already processed (idempotent)
-            if db.is_clip_processed(&clip.filename) {
+            if db.is_clip_processed(&clip.filename).await {
                 debug!("Skipping already-processed clip: {}", clip.filename);
                 // Still delete from capture server to free space
                 info!("Requesting capture to delete already-processed clip: {}", clip.filename);
@@ -403,7 +403,7 @@ async fn process_cycle(
                     "Skipping {} — will not retry until processed_clips is reset",
                     clip.filename
                 );
-                db.mark_clip_processed(&clip.filename, 0, 0)?;
+                db.mark_clip_processed(&clip.filename, 0, 0).await?;
 
                 continue;
             }
@@ -473,7 +473,7 @@ async fn process_cycle(
                     "Skipping {} — no first-frame detections and no motion (peak MAD={:.2})",
                     clip.filename, motion.peak_mad
                 );
-                if let Err(e) = db.mark_clip_processed(&clip.filename, frame_paths.len(), 0) {
+                if let Err(e) = db.mark_clip_processed(&clip.filename, frame_paths.len(), 0).await {
                     warn!("Cannot mark static clip processed: {e:#}");
                 }
                 cleanup_frames(&frame_dir);
@@ -608,9 +608,9 @@ async fn process_cycle(
                         let individual_id = if det.class == "person" {
                             if let Some(reid) = reidentifier {
                                 if let Some(embedding) = reid.embed(&crop) {
-                                    match db.find_matching_individual(&embedding) {
+                                    match db.find_matching_individual(&embedding).await {
                                         Ok(Some(id)) => {
-                                            if let Err(e) = db.touch_individual(id) {
+                                            if let Err(e) = db.touch_individual(id).await {
                                                 warn!("Cannot update individual {id}: {e}");
                                             }
                                             info!(
@@ -626,7 +626,7 @@ async fn process_cycle(
                                             match db.create_individual(
                                                 &embedding,
                                                 crop_str.as_deref(),
-                                            ) {
+                                            ).await {
                                                 Ok(id) => {
                                                     warn!(
                                                         "⚠️  UNKNOWN PERSON detected — \
@@ -693,7 +693,7 @@ async fn process_cycle(
                         };
 
                         // Insert into DB
-                        if let Err(e) = db.insert_detection(&row) {
+                        if let Err(e) = db.insert_detection(&row).await {
                             error!(
                                 "DB insert failed for {}/{}: {e}",
                                 clip.filename, frame_idx
@@ -703,7 +703,7 @@ async fn process_cycle(
                         // Track as training candidate if high-confidence
                         // animal with no species label.
                         if is_training_candidate {
-                            if let Err(e) = db.insert_training_candidate(&row) {
+                            if let Err(e) = db.insert_training_candidate(&row).await {
                                 debug!(
                                     "Training candidate insert failed: {e}"
                                 );
@@ -729,11 +729,11 @@ async fn process_cycle(
         );
 
         // 5. Update live status with class breakdown, top species, and recent labels
-        let class_counts = db.class_counts().unwrap_or_default();
+        let class_counts = db.class_counts().await.unwrap_or_default();
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        let top_species = db.species_summary(&today, &today).unwrap_or_default();
+        let top_species = db.species_summary(&today, &today).await.unwrap_or_default();
         let recent_labels: Vec<String> = db
-            .recent_detections(5)
+            .recent_detections(5).await
             .unwrap_or_default()
             .iter()
             .map(|d| {
@@ -748,7 +748,7 @@ async fn process_cycle(
             &config.recs_dir,
             &clip.filename,
             frame_paths.len(),
-            db.recent_detection_count(3600).unwrap_or(0),
+            db.recent_detection_count(3600).await.unwrap_or(0),
             &class_counts,
             &top_species,
             &recent_labels,
@@ -757,9 +757,9 @@ async fn process_cycle(
         );
 
         // 6. Mark clip as processed in DB (idempotent guard)
-        let det_count = db.recent_detection_count(60).unwrap_or(0);
+        let det_count = db.recent_detection_count(60).await.unwrap_or(0);
         if let Err(e) =
-            db.mark_clip_processed(&clip.filename, frame_paths.len(), det_count)
+            db.mark_clip_processed(&clip.filename, frame_paths.len(), det_count).await
         {
             warn!("Cannot mark clip processed: {e:#}");
         } else {

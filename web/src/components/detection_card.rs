@@ -1,6 +1,7 @@
 //! Card component for a single camera-trap detection.
 
-use leptos::*;
+use leptos::prelude::*;
+use leptos::prelude::{ElementChild, IntoView};
 
 use crate::model::WebDetection;
 
@@ -72,7 +73,7 @@ pub fn DetectionCard(detection: WebDetection) -> impl IntoView {
                             alt={label.clone()}
                             loading="lazy"
                         />
-                    }.into_view(),
+                    }.into_any(),
                     None => view! {
                         <div class="crop-placeholder">
                             <svg viewBox="0 0 24 24" width="32" height="32"
@@ -82,14 +83,14 @@ pub fn DetectionCard(detection: WebDetection) -> impl IntoView {
                                 <polyline points="21 15 16 10 5 21"/>
                             </svg>
                         </div>
-                    }.into_view(),
+                    }.into_any(),
                 }}
             </div>
 
             // Detection details
             <div class="detection-info">
                 <div class="detection-label">
-                    <span class={format!("class-badge class-{class_badge}")}>{&class_badge}</span>
+                    <span class={format!("class-badge class-{class_badge}")}>{class_badge.clone()}</span>
                     <span class={confidence_class}>{confidence_pct}</span>
                 </div>
 

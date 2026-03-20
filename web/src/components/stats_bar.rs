@@ -1,6 +1,7 @@
 //! Stats bar component showing key metrics.
 
-use leptos::*;
+use leptos::prelude::*;
+use leptos::prelude::{ElementChild, IntoView};
 
 use crate::model::SystemInfo;
 
